@@ -20,6 +20,11 @@ The depth intervention is the only intended observation-source difference:
   1-1600 m range. Its RGB still comes from the official 3DGS, not from the
   untextured mesh.
 
+Because the simplified mesh has no UV/MTL, offline GT-surface coverage cells use
+neutral zero-valued feature vectors. Those values are bookkeeping only and are
+never captured, saved as an observation, or passed to DA3; all captured color
+comes from the official 3DGS PLY.
+
 The calibration is not inferred from MAGICIAN's historical
 `scene_scale_factor=10`. The source Terra metadata declares EPSG:32650, whose
 Cartesian axes use metres; the Gaussian metadata is local ENU at the matching

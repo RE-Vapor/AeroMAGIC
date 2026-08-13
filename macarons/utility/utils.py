@@ -1425,6 +1425,13 @@ def sample_points_on_mesh_faces_with_normals(verts, faces, sample_face_indices,
     sampled_points = o + alpha * a + beta * b
 
     if return_textures:
+        if mesh is None or mesh.textures is None:
+            # Geometry-only benchmark meshes have no online color authority.
+            # GT scene features are used for coverage bookkeeping, so preserve
+            # their expected Nx3 shape with a neutral value. Captured RGB is
+            # supplied independently by the configured observation provider.
+            textures = torch.zeros((n_sample, 3), device=device, dtype=verts.dtype)
+            return sampled_points, face_normals, textures
         # 计算纹理
         pix_to_face = texture_face_indices.view(1, -1, 1, 1)  # NxSx1x1
 
