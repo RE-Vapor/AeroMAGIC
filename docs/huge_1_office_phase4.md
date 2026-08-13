@@ -16,8 +16,9 @@ The depth intervention is the only intended observation-source difference:
 
 - DA3 uses `Depth-Anything-3@3d835ec1` and the explicit calibration
   `huge_1_office = 1.0 scene unit/m`.
-- perfect depth uses the benchmark mesh z-buffer. Its RGB still comes from the
-  official 3DGS, not from the untextured mesh.
+- perfect depth uses the benchmark mesh z-buffer with the HUGE camera's
+  1-1600 m range. Its RGB still comes from the official 3DGS, not from the
+  untextured mesh.
 
 The calibration is not inferred from MAGICIAN's historical
 `scene_scale_factor=10`. The source Terra metadata declares EPSG:32650, whose

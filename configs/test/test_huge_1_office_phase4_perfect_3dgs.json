@@ -8,6 +8,8 @@
   "test_resolution": 0.5,
   "use_perfect_depth_map": true,
   "kind_depth_map": "DA3",
+  "gt_depth_minimum": 1.0,
+  "gt_depth_maximum": 1600.0,
   "huge_3dgs_rgb_enabled": true,
   "huge_3dgs_scene_name": "huge_1_office",
   "huge_3dgs_ply_path": "/home/ubuntu/Projects/MAGICIAN_MVE/HUGE-Bench/trajectory_generation/scene_annotations/data_3d/1_office/3dgs_ply/point_cloud_utm50.ply",
