@@ -211,3 +211,14 @@ class GTDepthProvider(DepthProvider):
 
 
 register_depth_provider("GT", GTDepthProvider)
+
+
+def _create_da3_provider(*, config: Any, device: Any) -> DepthProvider:
+    # Keep the optional DA3 implementation and its heavyweight dependencies
+    # out of the GT-only import path.
+    from .da3_adapter import DA3DepthProvider
+
+    return DA3DepthProvider(config=config, device=device)
+
+
+register_depth_provider("DA3", _create_da3_provider)

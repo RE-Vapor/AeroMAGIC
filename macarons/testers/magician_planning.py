@@ -746,13 +746,15 @@ def run_magician_test(params_name,
     # Setup device
     device = setup_device(params, None)
 
-    depth_provider = create_depth_provider(
-        {
-            'use_perfect_depth_map': use_perfect_depth_map,
-            'kind_depth_map': getattr(test_params, 'kind_depth_map', None),
-        },
-        device=device,
-    )
+    depth_provider_config = dict(vars(test_params)) if test_params is not None else {}
+    depth_provider_config.update({
+        'use_perfect_depth_map': use_perfect_depth_map,
+        'kind_depth_map': getattr(test_params, 'kind_depth_map', None),
+        'scene_scale_factor': params.scene_scale_factor,
+        'znear': params.znear,
+        'zfar': params.zfar,
+    })
+    depth_provider = create_depth_provider(depth_provider_config, device=device)
 
     # Setup model and dataloader
     dataloader, macarons, memory = setup_test(params, weights_path, device)
