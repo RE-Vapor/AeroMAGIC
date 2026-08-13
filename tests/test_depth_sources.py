@@ -214,8 +214,10 @@ class PlanningEntryPointRegressionTests(unittest.TestCase):
         ):
             source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
             with self.subTest(relative_path=relative_path):
-                self.assertIn("create_depth_provider(", source)
-                self.assertIn("depth_provider.get_frame(DepthObservation(", source)
+                self.assertIn("create_scene_depth_providers(", source)
+                self.assertIn("process_planning_depth_frame(", source)
+                self.assertIn("update_proxy_state(", source)
+                self.assertIn("compute_planning_coverage(", source)
                 self.assertNotIn("load_current_frame_perfect_depth", source)
                 self.assertNotIn("apply_perfect_depth_simple", source)
 
@@ -232,7 +234,11 @@ class PlanningEntryPointRegressionTests(unittest.TestCase):
     def test_default_registry_has_explicit_lazy_da3_without_gt_fallback(self):
         self.assertIn("DA3", registered_depth_providers())
         provider = create_depth_provider(
-            {"use_perfect_depth_map": False, "kind_depth_map": "DA3"},
+            {
+                "use_perfect_depth_map": False,
+                "kind_depth_map": "DA3",
+                "scene_units_per_meter": 1.0,
+            },
             device="cpu",
         )
         self.assertEqual(provider.source, "DA3")

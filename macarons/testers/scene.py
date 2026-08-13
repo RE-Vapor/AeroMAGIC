@@ -5,13 +5,22 @@ import gc
 import shutil
 from ..utility.macarons_utils import *
 from ..utility.utils import count_parameters
-from ..utility.depth_sources import DepthObservation, create_depth_provider
+from ..utility.planning_depth import (
+    apply_planning_validation_limits,
+    compute_planning_coverage,
+    create_scene_depth_providers,
+    process_planning_depth_frame,
+    update_proxy_state,
+)
 import json
 import time
 # from ..utility.diffusion_utils import *
 import pickle
 import lmdb
-from macarons.utility.tsp_utils import generate_key_value_splited_dict, line_segment_mesh_intersection
+from macarons.utility.magician_utils import (
+    generate_key_value_splited_dict,
+    line_segment_mesh_intersection,
+)
 
 def cleanup_trajectory_folders(training_frames_path, keep_folders=['imgs']):
     """
@@ -380,45 +389,14 @@ def compute_trajectory(params, macarons, camera, gt_scene, surface_scene,
     coverage_evolution = []
 
     def process_current_frame():
-        depth_frame = depth_provider.get_frame(DepthObservation(camera=camera, device=device))
-        depth = depth_frame.depth_z
-        mask = depth_frame.valid_mask
-        error_mask = depth_frame.error_mask
-
-        # 获取相机在世界坐标中的位置
-        fov_camera = camera.get_fov_camera_from_RT(R_cam=depth_frame.R, T_cam=depth_frame.T)
-        X_cam = fov_camera.get_camera_center()
-
-        # 计算点云
-        part_pc, part_pc_features = camera.compute_partial_point_cloud(
-            depth=depth, mask=(mask * error_mask).bool(), images=depth_frame.rgb,
-            fov_cameras=fov_camera,
+        return process_planning_depth_frame(
+            camera=camera,
+            depth_provider=depth_provider,
+            proxy_scene=proxy_scene,
+            device=device,
             gathering_factor=params.gathering_factor,
-            fov_range=params.sensor_range
+            sensor_range=params.sensor_range,
         )
-        
-        # 处理代理点
-        fov_proxy_points, fov_proxy_mask = camera.get_points_in_fov(
-            proxy_scene.proxy_points, return_mask=True,
-            fov_camera=None, fov_range=params.sensor_range
-        )
-        
-        sgn_dists = None
-        if fov_proxy_mask.any():
-            sgn_dists = camera.get_signed_distance_to_depth_maps(
-                pts=fov_proxy_points, depth_maps=depth,
-                mask=mask, fov_camera=None
-            )
-        
-        return {
-            'part_pc': part_pc,
-            'part_pc_features': part_pc_features,
-            'fov_proxy_points': fov_proxy_points,
-            'fov_proxy_mask': fov_proxy_mask,
-            'sgn_dists': sgn_dists,
-            'X_cam': X_cam,
-            'depth_frame': depth_frame
-        }
             
     pose_i = 0
     while pose_i <= params.n_poses_in_trajectory:
@@ -446,36 +424,27 @@ def compute_trajectory(params, macarons, camera, gt_scene, surface_scene,
         part_pc_idx = torch.full((frame_data['part_pc'].shape[0], 1), pose_i, device=device)
         full_pc_idx = torch.vstack((full_pc_idx, part_pc_idx))
 
-        if frame_data['fov_proxy_mask'].any():
-            fov_proxy_indices = proxy_scene.get_proxy_indices_from_mask(frame_data['fov_proxy_mask'])
-            proxy_scene.fill_cells(frame_data['fov_proxy_points'], 
-                                 features=fov_proxy_indices.view(-1, 1))
-            
-            proxy_scene.update_proxy_view_states(
-                camera, frame_data['fov_proxy_mask'],
-                signed_distances=frame_data['sgn_dists'],
-                distance_to_surface=None, 
-                X_cam=frame_data['X_cam']  
-            )
-            
-            proxy_scene.update_proxy_supervision_occ(
-                frame_data['fov_proxy_mask'], frame_data['sgn_dists'], 
-                tol=params.carving_tolerance
-            )
-            proxy_scene.update_proxy_out_of_field(frame_data['fov_proxy_mask'])
+        update_proxy_state(
+            camera=camera,
+            proxy_scene=proxy_scene,
+            frame_data=frame_data,
+            carving_tolerance=params.carving_tolerance,
+        )
 
         surface_scene.set_all_features_to_value(value=1.)
 
         # 计算覆盖率
-        current_coverage = gt_scene.scene_coverage(
-            covered_scene, surface_epsilon=2 * test_resolution * params.scene_scale_factor
+        current_coverage, current_cov = compute_planning_coverage(
+            gt_scene=gt_scene,
+            covered_scene=covered_scene,
+            surface_epsilon=2 * test_resolution * params.scene_scale_factor,
         )
         if pose_i % 10 == 0:
             print("current coverage:", current_coverage)
-        coverage_evolution.append(current_coverage[0].item() if current_coverage[0] != 0. else 0.)
+        coverage_evolution.append(current_cov)
 
-        # if pose_i >= params.n_poses_in_trajectory:
-        #     break
+        if pose_i >= params.n_poses_in_trajectory:
+            break
 
         # NBV选择逻辑保持不变
         with torch.no_grad():
@@ -564,6 +533,8 @@ def run_test(params_name,
     params.batch_size = 1
     params.total_batch_size = 1
 
+    max_start_positions = apply_planning_validation_limits(params, depth_config)
+
     if dataset_path is None:
         params.data_path = data_path
     else:
@@ -572,15 +543,16 @@ def run_test(params_name,
     # Setup device
     device = setup_device(params, None)
 
-    depth_provider_config = dict(vars(depth_config)) if depth_config is not None else {}
-    depth_provider_config.update({
-        'use_perfect_depth_map': use_perfect_depth_map,
-        'kind_depth_map': kind_depth_map,
-        'scene_scale_factor': params.scene_scale_factor,
-        'znear': params.znear,
-        'zfar': params.zfar,
-    })
-    depth_provider = create_depth_provider(depth_provider_config, device=device)
+    depth_providers = create_scene_depth_providers(
+        depth_config,
+        scene_names=test_scenes,
+        use_perfect_depth_map=use_perfect_depth_map,
+        kind_depth_map=kind_depth_map,
+        scene_scale_factor=params.scene_scale_factor,
+        znear=params.znear,
+        zfar=params.zfar,
+        device=device,
+    )
 
     # Setup model and dataloader
     dataloader, macarons, memory = setup_test(params, weights_path, device)
@@ -618,6 +590,7 @@ def run_test(params_name,
             torch.cuda.empty_cache()
 
             scene_name = scene_names[i_scene]
+            depth_provider = depth_providers[scene_name]
             obj_name = obj_names[i_scene]
             settings = all_settings[i_scene]
             settings = Settings(settings, device, params.scene_scale_factor)
@@ -657,7 +630,10 @@ def run_test(params_name,
 
             torch.cuda.empty_cache()
 
-            for start_cam_idx_i in range(len(settings.camera.start_positions)):
+            start_position_count = len(settings.camera.start_positions)
+            if max_start_positions is not None:
+                start_position_count = min(start_position_count, max_start_positions)
+            for start_cam_idx_i in range(start_position_count):
                 start_cam_idx = settings.camera.start_positions[start_cam_idx_i]
                 print("\n" + "="*60)
                 print(f"Start cam index {start_cam_idx_i} for {scene_name}: {start_cam_idx}")

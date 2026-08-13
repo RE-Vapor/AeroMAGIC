@@ -74,7 +74,10 @@ def _frame(index, *, include_gt=False):
     frame = {
         "rgb": rgb,
         "R": np.eye(3, dtype=np.float32)[None],
-        "T": np.array([[float(index), 2.0, 3.0]], dtype=np.float32),
+        "T": np.array(
+            [[float(index), 2.0 + (1.0 if index == 2 else 0.0), 3.0]],
+            dtype=np.float32,
+        ),
     }
     if include_gt:
         frame["zbuf"] = np.full((1, 2, 3, 1), index + 100.0, dtype=np.float32)
@@ -128,7 +131,8 @@ class DA3ProviderTests(unittest.TestCase):
         config = {
             "da3_cache_dir": str(Path(directory, "cache")),
             "da3_window_size": 2,
-            "da3_metric_to_scene_scale": 10.0,
+            "scene_name": "synthetic",
+            "scene_units_per_meter": 10.0,
             "znear": 0.5,
             "zfar": 50.0,
         }
@@ -156,7 +160,9 @@ class DA3ProviderTests(unittest.TestCase):
             self._touch_frames(directory, 3)
             frames = {index: _frame(index) for index in range(3)}
             model = _FakeModel()
-            provider, loader = self._provider(directory, frames, model)
+            provider, loader = self._provider(
+                directory, frames, model, da3_window_size=3
+            )
 
             result = provider.get_frame(DepthObservation(_Camera(directory, 3), "cuda:0"))
 
@@ -175,13 +181,21 @@ class DA3ProviderTests(unittest.TestCase):
             self.assertEqual(len(loader.calls), 1)
             self.assertEqual(len(model.calls), 1)
             call = model.calls[0]
-            self.assertEqual(len(call["image"]), 2)
+            self.assertEqual(len(call["image"]), 3)
             np.testing.assert_array_equal(
-                call["image"][0], np.rint(frames[1]["rgb"][0] * 255).astype(np.uint8)
+                call["image"][0], np.rint(frames[0]["rgb"][0] * 255).astype(np.uint8)
             )
-            self.assertEqual(call["extrinsics"].shape, (2, 4, 4))
-            self.assertEqual(call["intrinsics"].shape, (2, 3, 3))
-            self.assertIs(call["align_to_input_ext_scale"], False)
+            self.assertEqual(call["extrinsics"].shape, (3, 4, 4))
+            self.assertEqual(call["intrinsics"].shape, (3, 3, 3))
+            self.assertIs(call["align_to_input_ext_scale"], True)
+            expected_model_extrinsics = np.asarray(
+                result.cache_metadata["camera"]["extrinsics"]
+            )
+            expected_model_extrinsics[:, :3, 3] /= 10.0
+            np.testing.assert_allclose(
+                call["extrinsics"][:, :3, 3],
+                expected_model_extrinsics[:, :3, 3],
+            )
             self.assertEqual(call["process_res"], 504)
             self.assertEqual(call["process_res_method"], "upper_bound_resize")
 
@@ -189,6 +203,28 @@ class DA3ProviderTests(unittest.TestCase):
             self.assertEqual(metadata["adapter_version"], DA3_ADAPTER_VERSION)
             for name in ("source", "model", "preprocess", "camera", "scale"):
                 self.assertIn(name, metadata)
+
+    def test_two_or_collinear_frames_disable_degenerate_pose_alignment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._touch_frames(directory, 3)
+            frames = {index: _frame(index) for index in range(3)}
+            model = _FakeModel()
+            two_frame, _ = self._provider(directory, frames, model)
+            two_frame.get_frame(DepthObservation(_Camera(directory, 2)))
+            self.assertIsNone(model.calls[-1]["extrinsics"])
+            self.assertIs(model.calls[-1]["align_to_input_ext_scale"], False)
+
+            frames[2]["T"] = np.array([[2.0, 2.0, 3.0]], dtype=np.float32)
+            collinear, _ = self._provider(
+                directory,
+                frames,
+                model,
+                da3_window_size=3,
+                da3_cache_dir=str(Path(directory, "collinear-cache")),
+            )
+            collinear.get_frame(DepthObservation(_Camera(directory, 3)))
+            self.assertIsNone(model.calls[-1]["extrinsics"])
+            self.assertIs(model.calls[-1]["align_to_input_ext_scale"], False)
 
     def test_metric_scale_validity_and_confidence_masks(self):
         def prediction(count):
@@ -299,6 +335,7 @@ class DA3ProviderTests(unittest.TestCase):
                         "da3_cache_dir": str(Path(directory, "cache")),
                         "da3_output_height": 2,
                         "da3_output_width": 3,
+                        "scene_units_per_meter": 1.0,
                     },
                     device="cuda:0",
                     model_loader=shared_loader,
@@ -337,9 +374,75 @@ class DA3ProviderTests(unittest.TestCase):
             baseline = key()
             self.assertNotEqual(baseline, key(da3_model_revision="other-revision"))
             self.assertNotEqual(baseline, key(da3_process_res=392))
-            self.assertNotEqual(baseline, key(da3_metric_to_scene_scale=5.0))
+            self.assertNotEqual(baseline, key(scene_units_per_meter=5.0))
             frames[0]["T"] = np.array([[1.0, 2.0, 3.0]], dtype=np.float32)
             self.assertNotEqual(baseline, key())
+
+            frames[0]["T"] = np.array([[0.0, 2.0, 3.0]], dtype=np.float32)
+            changed_camera = _Camera(directory, 1)
+            changed_camera.fov_camera = SimpleNamespace(
+                focal_length=np.array([[2.0, 2.0]], dtype=np.float32),
+                principal_point=np.zeros((1, 2), dtype=np.float32),
+            )
+            provider, _ = self._provider(
+                directory,
+                frames,
+                model,
+                da3_output_height=2,
+                da3_output_width=3,
+            )
+            self.assertNotEqual(
+                baseline,
+                provider.get_frame(DepthObservation(changed_camera)).cache_metadata["cache_key"],
+            )
+
+    def test_cache_on_off_outputs_are_equivalent_and_off_does_not_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._touch_frames(directory, 1)
+            frames = {0: _frame(0)}
+            model = _FakeModel()
+            camera = _Camera(directory, 1)
+            cached, _ = self._provider(
+                directory,
+                frames,
+                model,
+                da3_output_height=2,
+                da3_output_width=3,
+                da3_cache_enabled=True,
+            )
+            uncached, _ = self._provider(
+                directory,
+                frames,
+                model,
+                da3_output_height=2,
+                da3_output_width=3,
+                da3_cache_enabled=False,
+            )
+
+            cached_miss = cached.get_frame(DepthObservation(camera))
+            cached_hit = cached.get_frame(DepthObservation(camera))
+            cache_files_before = tuple(Path(directory, "cache").glob("*.npz"))
+            uncached_result = uncached.get_frame(DepthObservation(camera))
+            cache_files_after = tuple(Path(directory, "cache").glob("*.npz"))
+
+            self.assertIs(cached_miss.cache_metadata["cache_hit"], False)
+            self.assertIs(cached_hit.cache_metadata["cache_hit"], True)
+            self.assertIs(uncached_result.cache_metadata["cache_enabled"], False)
+            self.assertIs(uncached_result.cache_metadata["cache_hit"], False)
+            self.assertEqual(cache_files_before, cache_files_after)
+            for field in ("rgb", "depth_z", "valid_mask", "error_mask", "confidence"):
+                np.testing.assert_array_equal(
+                    getattr(cached_miss, field), getattr(uncached_result, field)
+                )
+
+    def test_explicit_scene_scale_and_cache_switch_are_strict(self):
+        with self.assertRaisesRegex(ValueError, "scene_units_per_meter"):
+            DA3DepthProvider(config={}, device="cpu")
+        with self.assertRaisesRegex(ValueError, "da3_cache_enabled"):
+            DA3DepthProvider(
+                config={"scene_units_per_meter": 1.0, "da3_cache_enabled": 1},
+                device="cpu",
+            )
 
 
 if __name__ == "__main__":

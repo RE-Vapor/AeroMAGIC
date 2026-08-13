@@ -19,7 +19,13 @@ Below is a detailed description of all the hyperparameters involved in evaluatin
 | `da3_window_size` | int | Maximum number of recent RGB/pose frames used for pose-conditioned inference. |
 | `da3_process_res` / `da3_process_res_method` | int / str | DA3 preprocessing resolution and resize method. |
 | `da3_output_height` / `da3_output_width` | int | Planning output size; defaults to `256 x 456`. |
-| `da3_confidence_percentile` | float | Per-frame percentile used to form the confidence/error mask. |
+| `da3_confidence_percentile` | float / null | Optional calibrated per-frame confidence percentile. The default is `null`, which records confidence but does not discard finite valid depth using an uncalibrated threshold. |
+| `da3_cache_enabled` | bool | Enables persistent DA3 result caching. `false` performs inference without reading or writing cache files; outputs must remain numerically equivalent. |
+| `da3_scene_units_per_meter` | object | Required in DA3 mode: explicit positive `scene_units_per_meter` calibration keyed by every requested scene name. Missing scenes fail before model/dataset setup. `scene_scale_factor` is never treated as physical-unit evidence. |
+| `validation_n_poses_in_trajectory` | int | Optional short-run override. `2` exercises three captured views because the planners include pose zero. Omit it for the production trajectory length. |
+| `validation_max_start_positions` | int | Optional number of configured start poses to exercise. Omit it to run every start pose. |
+| `validation_memory_dir_name` | str | Optional plain directory name that isolates validation captures from production/test memories. Paths and traversal components are rejected. |
+| `validation_n_gt_surface_points` / `validation_n_proxy_points` | int | Optional short-run capacity overrides. Omit them to retain the training configuration. |
 
 Depth-source selection is intentionally strict. With `use_perfect_depth_map=true`,
 the GT provider is constructed and `kind_depth_map` is ignored, even if it is
@@ -27,8 +33,16 @@ missing or names another backend. With `use_perfect_depth_map=false`, the named
 non-GT backend must already be registered. DA3 imports and model construction
 remain lazy, so the GT path does not load DA3. The DA3 cache is stored below the
 captured-frame directory and is isolated by RGB content, camera parameters,
-model/revision, preprocessing, scene scale, and adapter version. Training uses
+model/revision, preprocessing, explicit per-scene metric scale, and adapter
+version. Pose translations are converted from calibrated scene units to meters
+before pose-conditioned inference, then metric depth is converted back to scene
+units. Training uses
 the separate `use_perfect_depth` option and is unchanged.
+
+`scene_metric_calibrations.json` records the evidence and arithmetic behind
+accepted metric scales. `test_da3_eiffel_real_mesh_config.json` is the bounded
+three-view configuration used to validate both planning entry points against a
+real Macarons++ mesh; its Eiffel value is copied from that evidence manifest.
 
 ## 2. 3D object reconstruction with a depth sensor
 

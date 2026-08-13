@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "calibrations": {
+    "eiffel": {
+      "scene_units_per_meter": 0.2641176363636364,
+      "physical_reference": {
+        "feature": "ground-to-antenna height",
+        "meters": 330.0,
+        "source": "https://www.toureiffel.paris/en/news/history-and-culture/300-330-meters-story-towers-height",
+        "source_owner": "Official Eiffel Tower website"
+      },
+      "mesh_measurement": {
+        "path": "data/Macarons++/eiffel/eiffel_rgb.obj",
+        "sha256": "fcbf08c0e224ebf2c844f558dbc1c095dbce00d852078632c839515d40075896",
+        "object": "EiffelTower.002_EiffelTower.001",
+        "vertical_axis": "y",
+        "selection": "triangle-connected components with max_y > 1.5 and x/z bounds strictly inside [-3, 3] OBJ units",
+        "selected_component_count": 75,
+        "base_y_obj_units": 0.442077,
+        "top_y_obj_units": 9.157959,
+        "height_obj_units": 8.715882,
+        "scene_scale_factor": 10.0,
+        "height_scene_units": 87.15882
+      },
+      "formula": "(9.157959 - 0.442077) * 10 / 330",
+      "cross_check": {
+        "feature": "maximum selected x/z footprint versus official 125 m ground width",
+        "mesh_scene_units": 29.70758,
+        "physical_meters": 125.0,
+        "scene_units_per_meter": 0.23766064,
+        "relative_difference_from_height_calibration": 0.1001712597761191
+      },
+      "scope": "Height-anchored asset calibration. The 10.0% footprint cross-check difference is retained as mesh-model uncertainty; this is not a survey-grade reconstruction."
+    }
+  }
+}

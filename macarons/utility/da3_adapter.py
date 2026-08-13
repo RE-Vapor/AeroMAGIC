@@ -47,6 +47,12 @@ def _positive_float(value: Any, name: str) -> float:
     return float(value)
 
 
+def _strict_bool(value: Any, name: str) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be a boolean.")
+    return value
+
+
 def _as_numpy(value: Any, *, dtype: Optional[np.dtype] = None) -> np.ndarray:
     if hasattr(value, "detach"):
         value = value.detach()
@@ -208,13 +214,14 @@ def _cache_key(metadata: Mapping[str, Any]) -> str:
 
 
 def _has_translation_baseline(extrinsics: np.ndarray, epsilon: float = 1e-6) -> bool:
-    """Whether Umeyama alignment has a non-degenerate camera-center baseline."""
+    """Whether DA3's 3D Umeyama alignment has sufficient camera-center rank."""
 
-    if len(extrinsics) < 2:
+    if len(extrinsics) < 3:
         return False
     camera_to_world = np.linalg.inv(extrinsics)
     centers = camera_to_world[:, :3, 3]
-    return bool(np.max(np.linalg.norm(centers - centers[:1], axis=1)) > epsilon)
+    centered = centers - np.mean(centers, axis=0, keepdims=True)
+    return bool(np.linalg.matrix_rank(centered, tol=epsilon) >= 2)
 
 
 def _default_frame_loader(path: str, device: Any) -> Mapping[str, Any]:
@@ -314,23 +321,38 @@ class DA3DepthProvider(DepthProvider):
         self.output_width = _positive_int(
             _config_value(config, "da3_output_width", 456), "da3_output_width"
         )
-        self.metric_to_scene_scale = _positive_float(
-            _config_value(
-                config,
-                "da3_metric_to_scene_scale",
-                _config_value(config, "scene_scale_factor", 10.0),
-            ),
-            "da3_metric_to_scene_scale",
+        missing = object()
+        raw_scene_units_per_meter = _config_value(
+            config, "scene_units_per_meter", missing
         )
+        if raw_scene_units_per_meter is missing:
+            raise ValueError(
+                "DA3 requires an explicit positive scene_units_per_meter calibration; "
+                "scene_scale_factor is not a physical-unit conversion."
+            )
+        self.scene_units_per_meter = _positive_float(
+            raw_scene_units_per_meter, "scene_units_per_meter"
+        )
+        self.scene_name = str(_config_value(config, "scene_name", "<unspecified>"))
         self.znear = _positive_float(_config_value(config, "znear", 0.5), "znear")
         self.zfar = _positive_float(_config_value(config, "zfar", 750.0), "zfar")
         if self.zfar <= self.znear:
             raise ValueError("zfar must be greater than znear.")
-        self.confidence_percentile = float(
-            _config_value(config, "da3_confidence_percentile", 40.0)
+        raw_confidence_percentile = _config_value(
+            config, "da3_confidence_percentile", None
         )
-        if not 0.0 <= self.confidence_percentile <= 100.0:
+        self.confidence_percentile = (
+            None
+            if raw_confidence_percentile is None
+            else float(raw_confidence_percentile)
+        )
+        if self.confidence_percentile is not None and not (
+            0.0 <= self.confidence_percentile <= 100.0
+        ):
             raise ValueError("da3_confidence_percentile must be in [0, 100].")
+        self.cache_enabled = _strict_bool(
+            _config_value(config, "da3_cache_enabled", True), "da3_cache_enabled"
+        )
 
         raw_cache_dir = _config_value(config, "da3_cache_dir", None)
         self.cache_dir = Path(raw_cache_dir) if raw_cache_dir else None
@@ -388,7 +410,8 @@ class DA3DepthProvider(DepthProvider):
                 "intrinsics": intrinsics.astype(np.float32).tolist(),
             },
             "scale": {
-                "metric_to_scene": self.metric_to_scene_scale,
+                "scene": self.scene_name,
+                "scene_units_per_meter": self.scene_units_per_meter,
                 "znear": self.znear,
                 "zfar": self.zfar,
             },
@@ -452,7 +475,7 @@ class DA3DepthProvider(DepthProvider):
         resized_depth = _resize_bilinear(
             depth_metric, self.output_height, self.output_width
         )
-        depth_scene = resized_depth * self.metric_to_scene_scale
+        depth_scene = resized_depth * self.scene_units_per_meter
         valid = np.isfinite(depth_scene) & (depth_scene >= self.znear) & (depth_scene <= self.zfar)
         depth_z = np.nan_to_num(
             depth_scene, nan=self.zfar, posinf=self.zfar, neginf=self.znear
@@ -467,13 +490,16 @@ class DA3DepthProvider(DepthProvider):
                 confidence, self.output_height, self.output_width
             )
             finite_confidence = np.isfinite(confidence_map)
-            threshold_values = confidence_map[valid & finite_confidence]
-            threshold = (
-                float(np.percentile(threshold_values, self.confidence_percentile))
-                if threshold_values.size
-                else math.inf
-            )
-            confidence_mask = valid & finite_confidence & (confidence_map >= threshold)
+            if self.confidence_percentile is None:
+                confidence_mask = valid & finite_confidence
+            else:
+                threshold_values = confidence_map[valid & finite_confidence]
+                threshold = (
+                    float(np.percentile(threshold_values, self.confidence_percentile))
+                    if threshold_values.size
+                    else math.inf
+                )
+                confidence_mask = valid & finite_confidence & (confidence_map >= threshold)
             confidence_map = np.nan_to_num(
                 confidence_map, nan=0.0, posinf=0.0, neginf=0.0
             ).astype(np.float32)
@@ -508,10 +534,13 @@ class DA3DepthProvider(DepthProvider):
         pose_conditioned = _has_translation_baseline(extrinsics)
         metadata = self._metadata(frame_ids, rgbs, extrinsics, intrinsics)
         metadata["camera"]["pose_conditioned"] = pose_conditioned
+        model_extrinsics = extrinsics.copy()
+        model_extrinsics[:, :3, 3] /= self.scene_units_per_meter
+        metadata["camera"]["model_extrinsics_meters"] = model_extrinsics.tolist()
         key = _cache_key(metadata)
         cache_path = self._cache_root(camera) / f"{key}.npz"
 
-        arrays = self._load_cache(cache_path, metadata)
+        arrays = self._load_cache(cache_path, metadata) if self.cache_enabled else None
         cache_hit = arrays is not None
         if arrays is None:
             device = observation.device if observation.device is not None else self.device
@@ -520,9 +549,9 @@ class DA3DepthProvider(DepthProvider):
             )
             prediction = model.inference(
                 image=list(rgbs),
-                extrinsics=extrinsics if pose_conditioned else None,
+                extrinsics=model_extrinsics if pose_conditioned else None,
                 intrinsics=intrinsics if pose_conditioned else None,
-                align_to_input_ext_scale=False,
+                align_to_input_ext_scale=pose_conditioned,
                 process_res=self.process_res,
                 process_res_method=self.process_res_method,
             )
@@ -537,13 +566,20 @@ class DA3DepthProvider(DepthProvider):
                 if raw_confidence is not None
                 else None,
             )
-            self._save_cache(cache_path, metadata, arrays)
+            if self.cache_enabled:
+                self._save_cache(cache_path, metadata, arrays)
 
         device = observation.device if observation.device is not None else self.device
         current_R = _single_rotation(frames[-1]["R"])[None]
         current_T = _single_translation(frames[-1]["T"])[None]
         output_metadata = dict(metadata)
-        output_metadata.update({"cache_key": key, "cache_hit": cache_hit})
+        output_metadata.update(
+            {
+                "cache_key": key,
+                "cache_enabled": self.cache_enabled,
+                "cache_hit": cache_hit,
+            }
+        )
         return DepthFrame(
             rgb=self._tensor_factory(arrays["rgb"], device, "float32"),
             depth_z=self._tensor_factory(arrays["depth_z"], device, "float32"),
