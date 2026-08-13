@@ -7,6 +7,7 @@ from ..utility.utils import count_parameters
 from ..utility.gaussian_utils import CamerasWrapper, convert_camera_from_pytorch3d_to_gs
 from ..utility.magician_utils import *
 from ..utility.planning_depth import (
+    apply_planning_validation_limits,
     compute_planning_coverage,
     create_scene_depth_providers,
     process_planning_depth_frame,
@@ -456,6 +457,9 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
             print("==========current coverage:", current_coverage)
         coverage_evolution.append(current_cov)
 
+        if pose_i >= params.n_poses_in_trajectory:
+            break
+
         # Occupancy field prediction
         with torch.no_grad():
             X_world, view_harmonics, occ_probs = compute_scene_occupancy_probability_field(
@@ -706,6 +710,8 @@ def run_magician_test(params_name,
     params.batch_size = 1
     params.total_batch_size = 1
 
+    max_start_positions = apply_planning_validation_limits(params, test_params)
+
     if dataset_path is None:
         params.data_path = data_path
     else:
@@ -786,7 +792,10 @@ def run_magician_test(params_name,
 
             torch.cuda.empty_cache()
 
-            for start_cam_idx_i in range(len(settings.camera.start_positions)):
+            start_position_count = len(settings.camera.start_positions)
+            if max_start_positions is not None:
+                start_position_count = min(start_position_count, max_start_positions)
+            for start_cam_idx_i in range(start_position_count):
                 start_cam_idx = settings.camera.start_positions[start_cam_idx_i]
                 print("\n" + "="*60)
                 print(f"Start cam index {start_cam_idx_i} for {scene_name}: {start_cam_idx}")

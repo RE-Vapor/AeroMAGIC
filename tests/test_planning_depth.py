@@ -5,11 +5,57 @@ import numpy as np
 
 from macarons.utility.depth_sources import DepthFrame, GTDepthProvider
 from macarons.utility.planning_depth import (
+    apply_planning_validation_limits,
     compute_planning_coverage,
     create_scene_depth_providers,
     process_planning_depth_frame,
     update_proxy_state,
 )
+
+
+class PlanningValidationLimitTests(unittest.TestCase):
+    def test_applies_short_run_limits_without_touching_other_params(self):
+        params = SimpleNamespace(
+            n_poses_in_trajectory=100,
+            n_gt_surface_points=100000,
+            n_proxy_points=800000,
+            untouched="value",
+        )
+        max_starts = apply_planning_validation_limits(
+            params,
+            {
+                "validation_n_poses_in_trajectory": 2,
+                "validation_n_gt_surface_points": 50000,
+                "validation_n_proxy_points": 200000,
+                "validation_max_start_positions": 1,
+                "validation_memory_dir_name": "real_mesh_validation",
+            },
+        )
+        self.assertEqual(params.n_poses_in_trajectory, 2)
+        self.assertEqual(params.n_gt_surface_points, 50000)
+        self.assertEqual(params.n_proxy_points, 200000)
+        self.assertEqual(params.memory_dir_name, "real_mesh_validation")
+        self.assertEqual(params.untouched, "value")
+        self.assertEqual(max_starts, 1)
+
+    def test_absent_limits_preserve_production_values(self):
+        params = SimpleNamespace(n_poses_in_trajectory=100)
+        self.assertIsNone(apply_planning_validation_limits(params, {}))
+        self.assertEqual(params.n_poses_in_trajectory, 100)
+
+    def test_rejects_invalid_limits(self):
+        with self.assertRaisesRegex(ValueError, "validation_n_poses_in_trajectory"):
+            apply_planning_validation_limits(
+                SimpleNamespace(), {"validation_n_poses_in_trajectory": -1}
+            )
+        with self.assertRaisesRegex(ValueError, "validation_max_start_positions"):
+            apply_planning_validation_limits(
+                SimpleNamespace(), {"validation_max_start_positions": True}
+            )
+        with self.assertRaisesRegex(ValueError, "validation_memory_dir_name"):
+            apply_planning_validation_limits(
+                SimpleNamespace(), {"validation_memory_dir_name": "../outside"}
+            )
 
 
 class SceneProviderTests(unittest.TestCase):

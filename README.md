@@ -28,8 +28,9 @@ cd MAGICIAN
 
 conda env create -f environment.yml
 conda activate magician
-# install pytorch-3d
-pip install "git+https://github.com/facebookresearch/pytorch3d.git"
+# install the PyTorch3D revision validated with torch 2.4.1 + CUDA 12.1
+CUDA_HOME=/usr/local/cuda-12.1 FORCE_CUDA=1 \
+  pip install "git+https://github.com/facebookresearch/pytorch3d.git@9381c4016376345bb795b97c45a6c2de66db354a"
 
 cd RaDe-GS
 pip install -r requirements.txt

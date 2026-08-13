@@ -6,7 +6,7 @@ planners.  They intentionally avoid importing PyTorch so configuration errors
 can fail before model, dataset, or renderer setup.
 """
 
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from .depth_sources import DepthObservation, create_depth_provider
 
@@ -26,6 +26,50 @@ def _config_value(config: Any, name: str, default: Any) -> Any:
     if isinstance(config, Mapping):
         return config.get(name, default)
     return getattr(config, name, default)
+
+
+def apply_planning_validation_limits(params: Any, config: Any) -> Optional[int]:
+    """Apply explicit short-run limits shared by both planning entry points.
+
+    Production configs omit these keys and retain the training configuration.
+    The dedicated real-mesh validation config uses them to exercise the same
+    entry points with one three-view trajectory instead of a full benchmark.
+    """
+
+    overrides = {
+        "validation_n_poses_in_trajectory": ("n_poses_in_trajectory", 0),
+        "validation_n_gt_surface_points": ("n_gt_surface_points", 1),
+        "validation_n_proxy_points": ("n_proxy_points", 1),
+    }
+    for config_name, (param_name, minimum) in overrides.items():
+        value = _config_value(config, config_name, None)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(f"{config_name} must be an integer >= {minimum}.")
+        setattr(params, param_name, value)
+
+    max_start_positions = _config_value(config, "validation_max_start_positions", None)
+    if max_start_positions is not None:
+        if (
+            isinstance(max_start_positions, bool)
+            or not isinstance(max_start_positions, int)
+            or max_start_positions < 1
+        ):
+            raise ValueError("validation_max_start_positions must be an integer >= 1.")
+
+    memory_dir_name = _config_value(config, "validation_memory_dir_name", None)
+    if memory_dir_name is not None:
+        if (
+            not isinstance(memory_dir_name, str)
+            or not memory_dir_name
+            or memory_dir_name in {".", ".."}
+            or "/" in memory_dir_name
+            or "\\" in memory_dir_name
+        ):
+            raise ValueError("validation_memory_dir_name must be a non-empty directory name.")
+        params.memory_dir_name = memory_dir_name
+    return max_start_positions
 
 
 def create_scene_depth_providers(

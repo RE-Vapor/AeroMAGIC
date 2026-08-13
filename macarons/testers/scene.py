@@ -6,6 +6,7 @@ import shutil
 from ..utility.macarons_utils import *
 from ..utility.utils import count_parameters
 from ..utility.planning_depth import (
+    apply_planning_validation_limits,
     compute_planning_coverage,
     create_scene_depth_providers,
     process_planning_depth_frame,
@@ -16,7 +17,10 @@ import time
 # from ..utility.diffusion_utils import *
 import pickle
 import lmdb
-from macarons.utility.tsp_utils import generate_key_value_splited_dict, line_segment_mesh_intersection
+from macarons.utility.magician_utils import (
+    generate_key_value_splited_dict,
+    line_segment_mesh_intersection,
+)
 
 def cleanup_trajectory_folders(training_frames_path, keep_folders=['imgs']):
     """
@@ -439,8 +443,8 @@ def compute_trajectory(params, macarons, camera, gt_scene, surface_scene,
             print("current coverage:", current_coverage)
         coverage_evolution.append(current_cov)
 
-        # if pose_i >= params.n_poses_in_trajectory:
-        #     break
+        if pose_i >= params.n_poses_in_trajectory:
+            break
 
         # NBV选择逻辑保持不变
         with torch.no_grad():
@@ -528,6 +532,8 @@ def run_test(params_name,
     params.WORLD_SIZE = 1
     params.batch_size = 1
     params.total_batch_size = 1
+
+    max_start_positions = apply_planning_validation_limits(params, depth_config)
 
     if dataset_path is None:
         params.data_path = data_path
@@ -624,7 +630,10 @@ def run_test(params_name,
 
             torch.cuda.empty_cache()
 
-            for start_cam_idx_i in range(len(settings.camera.start_positions)):
+            start_position_count = len(settings.camera.start_positions)
+            if max_start_positions is not None:
+                start_position_count = min(start_position_count, max_start_positions)
+            for start_cam_idx_i in range(start_position_count):
                 start_cam_idx = settings.camera.start_positions[start_cam_idx_i]
                 print("\n" + "="*60)
                 print(f"Start cam index {start_cam_idx_i} for {scene_name}: {start_cam_idx}")
