@@ -1,0 +1,19 @@
+{
+  "numGPU": 1,
+  "dataset_path": "./data/Macarons++",
+  "test_scenes": [
+    "huge_1_office"
+  ],
+  "params_name": "macarons_huge_1_office_smoke_config.json",
+  "model_name": "trained_macarons.pth",
+  "results_json_name": "huge_1_office_smoke_results.json",
+  "test_resolution": 0.5,
+  "use_perfect_depth_map": true,
+  "compute_collision": false,
+  "load_json": false,
+  "random_seed": 670,
+  "torch_seed": 670,
+  "lmdb_dir_name": "huge_1_office_smoke_lmdb",
+  "beam_width": 2,
+  "beam_steps": 2
+}
