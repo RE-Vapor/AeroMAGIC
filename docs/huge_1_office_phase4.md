@@ -5,6 +5,12 @@ the 3DGS adapter, the five configured starts, beam width/steps `10 x 10`, 101
 observations per start, collision checking, fixed seeds 670/670, and the legacy
 MAGICIAN point gathering radius `2 x gathering_factor`.
 
+The planner contract remains 256x456. The official 102.6M-Gaussian PLY is
+rasterized at aspect-preserving 128x228 and its RGB is bilinearly resized to
+256x456: native 256x456 rasterization exceeded 24 GB on an RTX 3090. DA3 depth
+and perfect mesh z-buffer depth both remain native 256x456; no depth is resized
+from the lower-resolution 3DGS render.
+
 The depth intervention is the only intended observation-source difference:
 
 - DA3 uses `Depth-Anything-3@3d835ec1` and the explicit calibration

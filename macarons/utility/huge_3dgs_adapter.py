@@ -31,6 +31,8 @@ class Huge3DGSConfig:
     chunk_size: int = 1_000_000
     frustum_center_margin: float = 0.15
     kernel_size: float = 0.0
+    render_height: int | None = None
+    render_width: int | None = None
     diagnostics_path: Path | None = None
 
     @classmethod
@@ -57,6 +59,8 @@ class Huge3DGSConfig:
         chunk_size = _value(config, "huge_3dgs_chunk_size", 1_000_000)
         margin = _value(config, "huge_3dgs_frustum_center_margin", 0.15)
         kernel_size = _value(config, "huge_3dgs_kernel_size", 0.0)
+        render_height = _value(config, "huge_3dgs_render_height", None)
+        render_width = _value(config, "huge_3dgs_render_width", None)
         if not isinstance(alpha, (int, float)) or not 0 <= alpha <= 1:
             raise ValueError("huge_3dgs_alpha_threshold must be in [0, 1].")
         if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size < 1:
@@ -65,6 +69,18 @@ class Huge3DGSConfig:
             raise ValueError("huge_3dgs_frustum_center_margin must be non-negative.")
         if not isinstance(kernel_size, (int, float)) or kernel_size < 0:
             raise ValueError("huge_3dgs_kernel_size must be non-negative.")
+        if (render_height is None) != (render_width is None):
+            raise ValueError(
+                "huge_3dgs_render_height and huge_3dgs_render_width must be set together."
+            )
+        for name, value in (
+            ("huge_3dgs_render_height", render_height),
+            ("huge_3dgs_render_width", render_width),
+        ):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+            ):
+                raise ValueError(f"{name} must be a positive integer.")
         diagnostics = _value(config, "huge_3dgs_diagnostics_path", None)
         return cls(
             enabled=True,
@@ -75,6 +91,8 @@ class Huge3DGSConfig:
             chunk_size=chunk_size,
             frustum_center_margin=float(margin),
             kernel_size=float(kernel_size),
+            render_height=render_height,
+            render_width=render_width,
             diagnostics_path=Path(diagnostics).expanduser().resolve()
             if diagnostics
             else None,
@@ -135,6 +153,10 @@ class Huge3DGSRGBProvider:
                 self.transform, dtype=torch.float32, device=render_device
             )[:3, :3]
             source_camera = camera.fov_camera
+            output_height = int(camera.image_height)
+            output_width = int(camera.image_width)
+            render_height = self.config.render_height or output_height
+            render_width = self.config.render_width or output_width
             r_magic = source_camera.R.to(render_device)
             t_magic = source_camera.T.to(render_device)
             r_huge = torch.matmul(q.transpose(0, 1).unsqueeze(0), r_magic)
@@ -150,8 +172,8 @@ class Huge3DGSRGBProvider:
             )
             gs_camera = convert_camera_from_pytorch3d_to_gs(
                 p3d_huge,
-                height=int(camera.image_height),
-                width=int(camera.image_width),
+                height=render_height,
+                width=render_width,
                 device=render_device,
             )[0]
             gs_camera.znear = float(getattr(camera, "znear", 1.0))
@@ -175,19 +197,37 @@ class Huge3DGSRGBProvider:
             rendered = render_gaussians(
                 buffers,
                 gs_camera,
-                int(camera.image_height),
-                int(camera.image_width),
+                render_height,
+                render_width,
                 self.config.kernel_size,
             )
             torch.cuda.synchronize(render_device)
             render_seconds = time.perf_counter() - rendered_at
-            rgb = rendered["rgb"].clamp(0, 1).permute(1, 2, 0).unsqueeze(0)
-            alpha = rendered["alpha"].permute(1, 2, 0).unsqueeze(0)
+            rgb_chw = rendered["rgb"].clamp(0, 1).unsqueeze(0)
+            alpha_chw = rendered["alpha"].unsqueeze(0)
+            if (render_height, render_width) != (output_height, output_width):
+                rgb_chw = torch.nn.functional.interpolate(
+                    rgb_chw,
+                    size=(output_height, output_width),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                alpha_chw = torch.nn.functional.interpolate(
+                    alpha_chw,
+                    size=(output_height, output_width),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+            rgb = rgb_chw.permute(0, 2, 3, 1)
+            alpha = alpha_chw.permute(0, 2, 3, 1)
             valid = alpha >= self.config.alpha_threshold
             metadata = {
                 "source": self.source,
                 "ply_path": str(self.config.ply_path),
                 "render_device": str(render_device),
+                "native_render_size": [render_height, render_width],
+                "planner_rgb_size": [output_height, output_width],
+                "rgb_resize": "bilinear" if render_height != output_height else "none",
                 "load_seconds": load_seconds,
                 "render_seconds": render_seconds,
                 "total_seconds": time.perf_counter() - started,
@@ -208,7 +248,7 @@ class Huge3DGSRGBProvider:
                 "metadata": metadata,
             }
             self._append_diagnostic(metadata)
-            del rendered, buffers, rgb, alpha, valid
+            del rendered, buffers, rgb_chw, alpha_chw, rgb, alpha, valid
             torch.cuda.empty_cache()
             return result
 
