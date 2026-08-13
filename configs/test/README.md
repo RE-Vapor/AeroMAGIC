@@ -13,7 +13,15 @@ Below is a detailed description of all the hyperparameters involved in evaluatin
 | `model_name` | str | Name of the weights file corresponding to the model to be evaluated. |
 | `results_json_name` | str | Name of the json file in which results will be saved. |
 | `test_resolution` | str | Distance threshold used to compute surface coverage during evaluation. |
-| `use_perfect_depth_map` | bool | If True, perfect depth maps will be used during evaluation, rather than predicted depth maps. Should be False. |
+| `use_perfect_depth_map` | bool | Selects renderer ground-truth depth when `true`. This flag has priority over `kind_depth_map`; the default remains `true` for backward-compatible evaluation. |
+| `kind_depth_map` | str | Case-insensitive registered depth backend selected only when `use_perfect_depth_map` is `false`. Whitespace is ignored. Missing, empty, `GT`, `NONE`, or unregistered values fail during startup; there is no GT fallback. `DA3` is reserved for the separately installed DA3 adapter. |
+
+Depth-source selection is intentionally strict. With `use_perfect_depth_map=true`,
+the GT provider is constructed and `kind_depth_map` is ignored, even if it is
+missing or names another backend. With `use_perfect_depth_map=false`, the named
+non-GT backend must already be registered. In the stage-1 baseline only GT is
+registered, so `false + DA3` fails explicitly until the DA3 adapter registers
+it. Training uses the separate `use_perfect_depth` option and is unchanged.
 
 ## 2. 3D object reconstruction with a depth sensor
 
