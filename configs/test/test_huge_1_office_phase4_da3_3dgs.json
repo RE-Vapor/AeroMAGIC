@@ -25,7 +25,7 @@
   "huge_3dgs_manifest_path": "/home/ubuntu/Projects/MAGICIAN_MVE/data/Macarons++/huge_1_office/conversion_manifest.json",
   "huge_3dgs_render_device": "cuda:1",
   "huge_3dgs_render_height": 128,
-  "huge_3dgs_render_width": 228,
+  "huge_3dgs_render_width": 128,
   "huge_3dgs_alpha_threshold": 0.1,
   "huge_3dgs_diagnostics_path": "/home/ubuntu/Projects/MAGICIAN_MYL18/results/myl18_huge_1_office_da3_3dgs/3dgs_frames.jsonl",
   "validation_n_poses_in_trajectory": 100,
