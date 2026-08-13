@@ -6,11 +6,11 @@ mode=${1:-}
 project_root=/home/ubuntu/Projects/MAGICIAN_MYL18
 case "$mode" in
   da3)
-    config=configs/test/test_huge_1_office_phase4_da3_3dgs.json
+    config=test_huge_1_office_phase4_da3_3dgs.json
     run_id=myl18_huge_1_office_da3_3dgs
     ;;
   perfect)
-    config=configs/test/test_huge_1_office_phase4_perfect_3dgs.json
+    config=test_huge_1_office_phase4_perfect_3dgs.json
     run_id=myl18_huge_1_office_perfect_3dgs
     ;;
   *)
