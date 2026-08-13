@@ -10,8 +10,14 @@ from ..utility.planning_depth import (
     apply_planning_validation_limits,
     compute_planning_coverage,
     create_scene_depth_providers,
+    path_is_blocked,
     process_planning_depth_frame,
+    set_planning_seeds,
     update_proxy_state,
+)
+from ..utility.experiment_metrics import (
+    create_trajectory_metrics_recorder,
+    write_online_metrics,
 )
 import trimesh
 import lmdb
@@ -384,7 +390,7 @@ def setup_test_camera(params,
 def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scene,
                            proxy_scene, covered_scene, mesh, intersector, device, settings,
                            depth_provider, test_resolution=0.05,
-                           compute_collision=False):
+                           compute_collision=False, metrics_recorder=None):
 
     macarons.eval()
 
@@ -407,8 +413,12 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
             depth_provider=depth_provider,
             proxy_scene=proxy_scene,
             device=device,
-            gathering_factor=params.gathering_factor * 2,
+            gathering_factor=(
+                params.gathering_factor
+                * getattr(params, "planning_gathering_factor_multiplier", 2.0)
+            ),
             sensor_range=params.sensor_range,
+            metrics_recorder=metrics_recorder,
         )
             
 
@@ -456,6 +466,8 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
         if pose_i % 5 == 0:
             print("==========current coverage:", current_coverage)
         coverage_evolution.append(current_cov)
+        if metrics_recorder is not None:
+            metrics_recorder.record_coverage(current_coverage, current_cov)
 
         if pose_i >= params.n_poses_in_trajectory:
             break
@@ -568,13 +580,28 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                     X_neighbor, V_neighbor, fov_neighbor = camera.get_camera_parameters_from_pose(neighbor_pose)
                     target_loc = X_neighbor[0].cpu().numpy()
 
-                    if bs_i == 0:
+                    if bs_i == 0 and getattr(params, "planning_shared_collision_gate", False):
+                        if path_is_blocked(
+                            current_loc,
+                            target_loc,
+                            intersector,
+                            compute_collision=compute_collision,
+                            intersection_fn=line_segment_mesh_intersection,
+                        ):
+                            continue
+                    elif bs_i == 0:
                         if line_segment_mesh_intersection(current_loc, target_loc, intersector):
                             continue
-                    else:
+                    elif getattr(params, "planning_shared_collision_gate", False):
                         # we use occupancy points to check for future collisions.
-                        if line_segment_intersects_point_cloud_region(filtered_X_world, X_current[0], X_neighbor[0]):
+                        if compute_collision and line_segment_intersects_point_cloud_region(
+                            filtered_X_world, X_current[0], X_neighbor[0]
+                        ):
                             continue
+                    elif line_segment_intersects_point_cloud_region(
+                        filtered_X_world, X_current[0], X_neighbor[0]
+                    ):
+                        continue
 
                     rendering_candidate.append(fov_neighbor)
                     idx_candidate.append(row)
@@ -711,6 +738,7 @@ def run_magician_test(params_name,
     params.total_batch_size = 1
 
     max_start_positions = apply_planning_validation_limits(params, test_params)
+    set_planning_seeds(test_params or {})
 
     if dataset_path is None:
         params.data_path = data_path
@@ -824,6 +852,15 @@ def run_magician_test(params_name,
                                            mirrored_scene=mirrored_scene, mirrored_axis=mirrored_axis)
                 print(camera.X_cam_history[0], camera.V_cam_history[0])
 
+                metrics_recorder = create_trajectory_metrics_recorder(
+                    test_params,
+                    planner="magician",
+                    scene=scene_name,
+                    start_index=start_cam_idx_i,
+                    capture_dir=training_frames_path,
+                    device=device,
+                )
+
                 coverage_evolution, X_cam_history, V_cam_history, full_pc, full_pc_colors, full_pc_idx = compute_magician_trajectory(params, macarons,
                                                                                       camera,
                                                                                       gt_scene, surface_scene,
@@ -834,7 +871,20 @@ def run_magician_test(params_name,
                                                                                       settings,
                                                                                       depth_provider=depth_provider,
                                                                                       test_resolution=test_resolution,
-                                                                                      compute_collision=compute_collision)
+                                                                                      compute_collision=compute_collision,
+                                                                                      metrics_recorder=metrics_recorder)
+
+                experiment_metrics = None
+                experiment_metrics_path = None
+                if metrics_recorder is not None:
+                    experiment_metrics = metrics_recorder.finalize(
+                        X_cam_history=X_cam_history,
+                        V_cam_history=V_cam_history,
+                        final_point_count=len(full_pc),
+                    )
+                    experiment_metrics_path = write_online_metrics(
+                        test_params, experiment_metrics
+                    )
                 
 
                 # Open LMDB, save data, then close
@@ -848,7 +898,9 @@ def run_magician_test(params_name,
                     'X_cam_history': X_cam_history.cpu().numpy(),
                     'V_cam_history': V_cam_history.cpu().numpy(),
                     'points': full_pc.cpu().numpy(),
-                    'points_color': full_pc_colors.cpu().numpy()
+                    'points_color': full_pc_colors.cpu().numpy(),
+                    'experiment_metrics': experiment_metrics,
+                    'experiment_metrics_path': experiment_metrics_path,
                 }
                 save_to_lmdb(lmdb_env, lmdb_key, trajectory_data)
 

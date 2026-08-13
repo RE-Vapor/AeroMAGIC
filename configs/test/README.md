@@ -44,6 +44,23 @@ accepted metric scales. `test_da3_eiffel_real_mesh_config.json` is the bounded
 three-view configuration used to validate both planning entry points against a
 real Macarons++ mesh; its Eiffel value is copied from that evidence manifest.
 
+## 1.1 Eiffel fair experiment and diagnostics
+
+`scripts/run_eiffel_fair_experiments.py` generates reproducible Eiffel-only
+GT/DA3 fair pairs plus confidence, scale, window, process-resolution, and
+mapping ablations.  `--generate-only --suite all` materializes every config and
+records unselected runs without using a GPU.  Executed runs persist online-only
+metrics (depth/confidence summaries, geometry counts, coverage, trajectory,
+latency, and CUDA memory) in both LMDB and JSON.
+
+`scripts/analyze_planning_diagnostics.py` is intentionally a separate post-run
+process.  It is the only experiment component that reads captured renderer
+`zbuf/mask`, and writes `diagnostic_only=true` / `feedback_to_online_planner=false`.
+Test-fit scale/shift is therefore a diagnostic, never an online DA3 correction.
+See `LabLog/阶段 4：Eiffel 公平实验、诊断与调参记录.md` for exact commands,
+runtime provenance, measured results, failed-attempt disclosure, and the
+single-scene conclusion boundary.
+
 ## 2. 3D object reconstruction with a depth sensor
 
 | Parameter | Type | Description |

@@ -1,0 +1,293 @@
+"""Leakage-safe telemetry for planning experiments.
+
+The online recorder intentionally sees only the depth-provider result and the
+state already consumed by the planner.  Renderer ``zbuf`` and renderer masks
+are read exclusively by ``scripts/analyze_planning_diagnostics.py`` after the
+planner process has exited.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from pathlib import Path
+import time
+from typing import Any, Mapping, Optional
+
+import numpy as np
+
+
+def _as_numpy(value: Any) -> np.ndarray:
+    if value is None:
+        return np.asarray([])
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    return np.asarray(value)
+
+
+def _scalar(value: Any) -> float:
+    if isinstance(value, (tuple, list)) and value:
+        return _scalar(value[0])
+    array = _as_numpy(value).reshape(-1)
+    return float(array[0]) if array.size else math.nan
+
+
+def _finite_stats(values: Any, mask: Any = None) -> Mapping[str, Optional[float]]:
+    array = _as_numpy(values).astype(np.float64, copy=False).reshape(-1)
+    if mask is not None:
+        selected = _as_numpy(mask).astype(bool, copy=False).reshape(-1)
+        if selected.shape != array.shape:
+            raise ValueError("Metric values and mask must contain the same number of elements.")
+        array = array[selected]
+    array = array[np.isfinite(array)]
+    if not array.size:
+        return {"min": None, "p10": None, "median": None, "p90": None, "max": None}
+    return {
+        "min": float(np.min(array)),
+        "p10": float(np.percentile(array, 10)),
+        "median": float(np.median(array)),
+        "p90": float(np.percentile(array, 90)),
+        "max": float(np.max(array)),
+    }
+
+
+def _count(value: Any) -> int:
+    try:
+        return int(len(value))
+    except TypeError:
+        return int(_as_numpy(value).size)
+
+
+class TrajectoryMetricsRecorder:
+    """Collect online-only telemetry for one completed trajectory."""
+
+    schema_version = 1
+
+    def __init__(
+        self,
+        *,
+        planner: str,
+        scene: str,
+        start_index: int,
+        capture_dir: str,
+        config: Any,
+        device: Any,
+        run_metadata: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        self.planner = str(planner)
+        self.scene = str(scene)
+        self.start_index = int(start_index)
+        self.capture_dir = str(Path(capture_dir).resolve())
+        self.device = device
+        self.run_metadata = dict(run_metadata or {})
+        self.scene_units_per_meter = float(
+            _config_value(config, "da3_scene_units_per_meter", {}).get(scene, 1.0)
+        )
+        self.frames = []
+        self.coverage = []
+        self.started_at = time.perf_counter()
+        self._reset_cuda_peak()
+
+    def _cuda(self):
+        try:
+            import torch
+
+            if torch.cuda.is_available() and str(self.device).startswith("cuda"):
+                return torch
+        except (ImportError, RuntimeError):
+            return None
+        return None
+
+    def synchronize(self) -> None:
+        torch = self._cuda()
+        if torch is not None:
+            torch.cuda.synchronize(self.device)
+
+    def _reset_cuda_peak(self) -> None:
+        torch = self._cuda()
+        if torch is not None:
+            torch.cuda.reset_peak_memory_stats(self.device)
+
+    def record_frame(
+        self,
+        frame_data: Mapping[str, Any],
+        *,
+        provider_seconds: float,
+        geometry_seconds: float,
+    ) -> None:
+        frame = frame_data["depth_frame"]
+        valid_mask = _as_numpy(frame.valid_mask).astype(bool, copy=False)
+        error_mask = _as_numpy(frame.error_mask).astype(bool, copy=False)
+        planning_mask = _as_numpy(frame_data["planning_mask"]).astype(bool, copy=False)
+        pixel_count = int(planning_mask.size)
+        metadata = dict(getattr(frame, "cache_metadata", {}) or {})
+        camera_metadata = metadata.get("camera", {})
+        intrinsics = camera_metadata.get("intrinsics")
+        if intrinsics:
+            intrinsics = intrinsics[-1]
+
+        confidence = getattr(frame, "confidence", None)
+        confidence_stats = None
+        if confidence is not None:
+            confidence_stats = _finite_stats(confidence, valid_mask)
+
+        signed_distances = frame_data.get("sgn_dists")
+        self.frames.append(
+            {
+                "frame_id": int(frame.frame_id),
+                "source": str(frame.source),
+                "cache_key": metadata.get("cache_key"),
+                "cache_hit": metadata.get("cache_hit"),
+                "pose_conditioned": camera_metadata.get("pose_conditioned"),
+                "intrinsics": intrinsics,
+                "pixel_count": pixel_count,
+                "valid_pixels": int(valid_mask.sum()),
+                "confidence_accepted_pixels": int(error_mask.sum()),
+                "planning_pixels": int(planning_mask.sum()),
+                "planning_ratio": float(planning_mask.mean()) if pixel_count else 0.0,
+                "depth_scene_units": _finite_stats(frame.depth_z, planning_mask),
+                "confidence": confidence_stats,
+                "partial_point_count": _count(frame_data["part_pc"]),
+                "proxy_points_in_fov": _count(frame_data["fov_proxy_points"]),
+                "signed_distance_scene_units": (
+                    _finite_stats(signed_distances) if signed_distances is not None else None
+                ),
+                "provider_seconds": float(provider_seconds),
+                "geometry_seconds": float(geometry_seconds),
+            }
+        )
+
+    def record_coverage(self, raw: Any, normalized: float) -> None:
+        previous = self.coverage[-1]["normalized"] if self.coverage else 0.0
+        self.coverage.append(
+            {
+                "frame_id": len(self.coverage),
+                "raw": _scalar(raw),
+                "normalized": float(normalized),
+                "increment": float(normalized - previous),
+            }
+        )
+
+    def finalize(
+        self,
+        *,
+        X_cam_history: Any,
+        V_cam_history: Any,
+        final_point_count: int,
+    ) -> Mapping[str, Any]:
+        self.synchronize()
+        positions = _as_numpy(X_cam_history).astype(np.float64, copy=False).reshape(-1, 3)
+        orientations = _as_numpy(V_cam_history).astype(np.float64, copy=False)
+        path_length = (
+            float(np.linalg.norm(np.diff(positions, axis=0), axis=1).sum())
+            if len(positions) > 1
+            else 0.0
+        )
+        cuda_metrics = None
+        torch = self._cuda()
+        if torch is not None:
+            cuda_metrics = {
+                "peak_allocated_mib": float(
+                    torch.cuda.max_memory_allocated(self.device) / (1024.0**2)
+                ),
+                "peak_reserved_mib": float(
+                    torch.cuda.max_memory_reserved(self.device) / (1024.0**2)
+                ),
+            }
+        return {
+            "schema_version": self.schema_version,
+            "online_only": True,
+            "renderer_gt_read": False,
+            "planner": self.planner,
+            "scene": self.scene,
+            "start_index": self.start_index,
+            "capture_dir": self.capture_dir,
+            "scene_units_per_meter": self.scene_units_per_meter,
+            "run": self.run_metadata,
+            "frames": self.frames,
+            "coverage": self.coverage,
+            "trajectory": {
+                "positions": positions.tolist(),
+                "orientations": orientations.tolist(),
+                "observation_count": int(len(positions)),
+                "path_length_scene_units": path_length,
+                "path_length_meters": path_length / self.scene_units_per_meter,
+                "final_point_count": int(final_point_count),
+            },
+            "latency": {
+                "trajectory_seconds": float(time.perf_counter() - self.started_at),
+                "provider_seconds": float(sum(frame["provider_seconds"] for frame in self.frames)),
+                "geometry_seconds": float(sum(frame["geometry_seconds"] for frame in self.frames)),
+            },
+            "cuda": cuda_metrics,
+        }
+
+
+def _config_value(config: Any, name: str, default: Any) -> Any:
+    if isinstance(config, Mapping):
+        return config.get(name, default)
+    return getattr(config, name, default)
+
+
+def experiment_metrics_enabled(config: Any) -> bool:
+    value = _config_value(config, "experiment_metrics_enabled", False)
+    if type(value) is not bool:
+        raise ValueError("experiment_metrics_enabled must be a boolean.")
+    return value
+
+
+def create_trajectory_metrics_recorder(
+    config: Any,
+    *,
+    planner: str,
+    scene: str,
+    start_index: int,
+    capture_dir: str,
+    device: Any,
+) -> Optional[TrajectoryMetricsRecorder]:
+    if not experiment_metrics_enabled(config):
+        return None
+    run_metadata = {
+        "run_id": _config_value(config, "experiment_run_id", None),
+        "seed": _config_value(config, "random_seed", None),
+        "torch_seed": _config_value(config, "torch_seed", None),
+        "budget_observations": _config_value(config, "experiment_budget_observations", None),
+        "compute_collision": _config_value(config, "compute_collision", None),
+        "gt_mesh_reference": True,
+        "renderer_zbuf_role": "offline_diagnostic_only",
+        "gt_feedback_to_da3": False,
+        "gt_mesh_pose_validity_prior": True,
+        "gt_mesh_segment_collision_prior": bool(
+            _config_value(config, "compute_collision", False)
+        ),
+        "rade_gs_prior": planner.lower() == "magician",
+    }
+    return TrajectoryMetricsRecorder(
+        planner=planner,
+        scene=scene,
+        start_index=start_index,
+        capture_dir=capture_dir,
+        config=config,
+        device=device,
+        run_metadata=run_metadata,
+    )
+
+
+def write_online_metrics(config: Any, metrics: Mapping[str, Any]) -> Optional[str]:
+    output_dir = _config_value(config, "experiment_metrics_dir", None)
+    if output_dir is None:
+        return None
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    filename = "{planner}_{scene}_{start}.online.json".format(
+        planner=metrics["planner"], scene=metrics["scene"], start=metrics["start_index"]
+    )
+    path = root / filename
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.replace(path)
+    return str(path)

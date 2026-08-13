@@ -6,7 +6,9 @@ planners.  They intentionally avoid importing PyTorch so configuration errors
 can fail before model, dataset, or renderer setup.
 """
 
-from typing import Any, Mapping, Optional, Sequence
+import random
+import time
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .depth_sources import DepthObservation, create_depth_provider
 
@@ -69,7 +71,78 @@ def apply_planning_validation_limits(params: Any, config: Any) -> Optional[int]:
         ):
             raise ValueError("validation_memory_dir_name must be a non-empty directory name.")
         params.memory_dir_name = memory_dir_name
+
+    experiment_overrides = _config_value(config, "experiment_param_overrides", {})
+    if not isinstance(experiment_overrides, Mapping):
+        raise ValueError("experiment_param_overrides must be an object.")
+    allowed_overrides = {
+        "carving_tolerance",
+        "gathering_factor",
+        "planning_gathering_factor_multiplier",
+        "proxy_cell_resolution",
+        "score_threshold",
+    }
+    unknown = sorted(set(experiment_overrides) - allowed_overrides)
+    if unknown:
+        raise ValueError("Unsupported experiment_param_overrides: " + ", ".join(unknown))
+    for name, value in experiment_overrides.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError(f"experiment_param_overrides.{name} must be positive.")
+        setattr(params, name, float(value))
+
+    for config_name, param_name in (
+        ("experiment_shared_collision_gate", "planning_shared_collision_gate"),
+        (
+            "experiment_normalize_coverage_by_visibility",
+            "planning_normalize_coverage_by_visibility",
+        ),
+    ):
+        value = _config_value(config, config_name, False)
+        if type(value) is not bool:
+            raise ValueError(f"{config_name} must be a boolean.")
+        setattr(params, param_name, value)
     return max_start_positions
+
+
+def set_planning_seeds(config: Any) -> Mapping[str, int]:
+    """Set all stochastic sources used by the two planning entry points."""
+
+    numpy_seed = _config_value(config, "random_seed", 8)
+    torch_seed = _config_value(config, "torch_seed", 9)
+    for name, value in (("random_seed", numpy_seed), ("torch_seed", torch_seed)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer.")
+
+    import numpy as np
+
+    random.seed(numpy_seed)
+    np.random.seed(numpy_seed)
+    try:
+        import torch
+
+        torch.manual_seed(torch_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(torch_seed)
+    except ImportError:
+        pass
+    return {"random_seed": numpy_seed, "torch_seed": torch_seed}
+
+
+def path_is_blocked(
+    start_point: Any,
+    end_point: Any,
+    intersector: Any,
+    *,
+    compute_collision: bool,
+    intersection_fn: Callable[[Any, Any, Any], bool],
+) -> bool:
+    """Apply the same optional GT-mesh segment collision gate to both planners."""
+
+    if type(compute_collision) is not bool:
+        raise ValueError("compute_collision must be a boolean.")
+    return bool(
+        compute_collision and intersection_fn(start_point, end_point, intersector)
+    )
 
 
 def create_scene_depth_providers(
@@ -153,10 +226,19 @@ def process_planning_depth_frame(
     device: Any,
     gathering_factor: float,
     sensor_range: float,
+    metrics_recorder: Any = None,
 ) -> Mapping[str, Any]:
     """Acquire one provider frame and derive geometry from its trusted mask."""
 
+    if metrics_recorder is not None:
+        metrics_recorder.synchronize()
+    provider_started = time.perf_counter()
     depth_frame = depth_provider.get_frame(DepthObservation(camera=camera, device=device))
+    if metrics_recorder is not None:
+        metrics_recorder.synchronize()
+    provider_seconds = time.perf_counter() - provider_started
+
+    geometry_started = time.perf_counter()
     planning_mask = _boolean_mask(depth_frame.valid_mask & depth_frame.error_mask)
     fov_camera = camera.get_fov_camera_from_RT(R_cam=depth_frame.R, T_cam=depth_frame.T)
     camera_center = fov_camera.get_camera_center()
@@ -184,7 +266,7 @@ def process_planning_depth_frame(
             fov_camera=fov_camera,
         )
 
-    return {
+    result = {
         "part_pc": part_pc,
         "part_pc_features": part_pc_features,
         "fov_proxy_points": fov_proxy_points,
@@ -194,6 +276,14 @@ def process_planning_depth_frame(
         "planning_mask": planning_mask,
         "depth_frame": depth_frame,
     }
+    if metrics_recorder is not None:
+        metrics_recorder.synchronize()
+        metrics_recorder.record_frame(
+            result,
+            provider_seconds=provider_seconds,
+            geometry_seconds=time.perf_counter() - geometry_started,
+        )
+    return result
 
 
 def update_proxy_state(
