@@ -236,17 +236,29 @@ def capture_planning_observation(
     """Capture benchmark geometry, then replace only RGB with official 3DGS."""
     import torch
 
-    images, depth = camera.capture_image(mesh)
     if rgb_provider is None:
-        return images, depth
+        return camera.capture_image(mesh)
 
+    # HUGE's simplified collision/evaluation mesh deliberately has no UV/MTL.
+    # Calling the shaded MeshRenderer would therefore fail in sample_textures.
+    # Rasterize geometry only for the benchmark z-buffer/mask, while the
+    # observation RGB comes exclusively from the official Gaussian PLY.
+    with torch.no_grad():
+        fragments = camera.renderer.rasterizer(mesh, cameras=camera.fov_camera)
+        depth = fragments.zbuf
     rendered = rgb_provider.render(camera)
-    frame_id = camera.n_frames_captured - 1
+    frame_id = camera.n_frames_captured
     frame_path = Path(camera.save_dir_path) / f"{frame_id}.pt"
-    frame = torch.load(frame_path, map_location=camera.device)
-    frame["rgb"] = rendered["rgb"]
-    frame["observation_rgb_source"] = rendered["source"]
-    frame["observation_rgb_metadata"] = rendered["metadata"]
+    frame = {
+        "rgb": rendered["rgb"],
+        "zbuf": depth,
+        "mask": depth > -1,
+        "R": camera.fov_camera.R,
+        "T": camera.fov_camera.T,
+        "zfar": camera.zfar,
+        "observation_rgb_source": rendered["source"],
+        "observation_rgb_metadata": rendered["metadata"],
+    }
     temporary = frame_path.with_suffix(".pt.tmp")
     torch.save(frame, temporary)
     os.replace(temporary, frame_path)
@@ -256,4 +268,5 @@ def capture_planning_observation(
     png_path = frame_path.parent.parent / "imgs" / f"{frame_id}.png"
     png_path.parent.mkdir(parents=True, exist_ok=True)
     to_pil_image(rendered["rgb"][0].permute(2, 0, 1).cpu()).save(png_path)
+    camera.n_frames_captured += 1
     return rendered["rgb"], depth
