@@ -100,3 +100,46 @@ This is a real RGB harness incompatibility. Do not add a dummy texture and do
 not call the geometry-only result a full planning smoke-test pass. A faithful
 next step is a renderer adapter that renders the official 3DGS PLY in the same
 camera frame, with an explicit observation/planner/evaluator permission boundary.
+
+## Restricted one-view 3DGS probe
+
+Before connecting 3DGS output to the planner, run the fixed first start pose at
+exactly `128x128`:
+
+```bash
+CUDA_VISIBLE_DEVICES=3 python tools/probe_huge_3dgs_alignment.py \
+  --ply /path/to/data_3d/1_office/3dgs_ply/point_cloud_utm50.ply \
+  --scene-dir ./data/Macarons++/huge_1_office \
+  --landmarks /path/to/data_3d/1_office/location_gen/landmark_merged_s.txt \
+  --output-dir ./results/huge_1_office_3dgs_probe \
+  --device cuda:0 --image-height 128 --image-width 128 \
+  --start-number 0 --znear 1 --zfar 1600
+```
+
+The probe validates the official 18-field binary PLY and its SHA-256, loads all
+Gaussians, and uses all three scale components, all four rotation components and
+`filter_3D`. It applies the same scale/opacity filter equations as RaDe-GS. To
+fit the 102-million-Gaussian asset on a 24 GB GPU, it deterministically compacts
+the fixed view before rasterization: centers behind RaDe-GS's `0.2 m` limit are
+removed, while a 15% image-side margin plus a per-Gaussian 3-sigma scale bound
+conservatively retains splats that can reach the image. This is not sampling.
+
+The output contains RGB, expected depth, median depth, alpha and the mesh z-buffer
+as exact float arrays in `probe_outputs.npz`, plus `probe_report.json`,
+`probe.log` and `probe_overview.png`. The pass thresholds are declared by the CLI
+defaults before rendering. A pass requires:
+
+- camera center error at most `1e-4 m`, rotation error at most `1e-5`, at least
+  three in-frame landmarks, and aligned landmark projection error at most
+  `0.01 px`;
+- finite, non-empty RGB/depth/alpha and mesh-zbuf outputs with the documented
+  `128x128` shapes;
+- identity orientation to be the best mask alignment and mask IoU at least
+  `0.5`;
+- at least 500 overlapping pixels, with either expected or median depth reaching
+  median relative error at most `0.10` and p90 relative error at most `0.25`.
+
+Passing this probe establishes one-view renderer/camera/geometry feasibility
+only. It does not mean that an observation provider exists, GT colour has been
+decoupled, the `256x456` short-budget harness has run, or online planning is free
+of ground-truth leakage.
