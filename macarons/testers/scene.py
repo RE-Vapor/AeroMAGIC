@@ -5,6 +5,7 @@ import gc
 import shutil
 from ..utility.macarons_utils import *
 from ..utility.utils import count_parameters
+from ..utility.depth_sources import DepthObservation, create_depth_provider
 import json
 import time
 # from ..utility.diffusion_utils import *
@@ -83,54 +84,6 @@ def load_from_lmdb(lmdb_env, key):
         if serialized_data is None:
             return None
         return pickle.loads(serialized_data)
-
-def load_current_frame_perfect_depth(camera, device):
-    """
-    专门为perfect depth优化的单帧加载函数
-    直接替代复杂的load_images_for_depth_model流程
-    """
-    current_frame_nb = camera.n_frames_captured - 1
-    frame_path = os.path.join(camera.save_dir_path, str(current_frame_nb) + '.pt')
-    
-    if not os.path.exists(frame_path):
-        raise FileNotFoundError(f"当前帧文件不存在: {frame_path}")
-    
-    frame_dict = torch.load(frame_path, map_location=device)
-    
-    # 直接返回当前帧的所有需要信息
-    return {
-        'rgb': frame_dict['rgb'],           # (1, H, W, 3)
-        'zbuf': frame_dict['zbuf'],         # (1, H, W, 1) - GT深度!
-        'mask': frame_dict['mask'],         # (1, H, W, 1)
-        'R': frame_dict['R'],               # (1, 3, 3)
-        'T': frame_dict['T'],               # (1, 3)
-        'zfar': camera.zfar
-    }
-
-def apply_perfect_depth_simple(frame_data, device, use_error_mask=True):
-    """
-    简化版深度处理，专门用于perfect depth
-    直接替代复杂的apply_depth_model函数
-    """
-    # 直接使用GT深度，无需任何网络推理
-    images = frame_data['rgb']
-    zbuf = frame_data['zbuf'] 
-    mask = frame_data['mask'].bool()
-    R = frame_data['R']
-    T = frame_data['T']
-    
-    # 深度就是GT zbuf
-    depth = torch.clamp(zbuf, min=0.5, max=750.0)  # 使用zfar限制
-    
-    # 简单的error mask (如果需要的话)
-    if use_error_mask:
-        # 对于perfect depth，error mask可以就是原始mask
-        error_mask = mask
-    else:
-        error_mask = torch.ones_like(mask)
-    
-    return depth, mask, error_mask, R, T
-
 
 def clear_folder(folder_path):
     """
@@ -414,9 +367,9 @@ def setup_test_scene(params,
 
 
 
-def compute_trajectory(params, macarons, camera, gt_scene, surface_scene, 
-                           proxy_scene, covered_scene, mesh, intersector, device, settings, 
-                           test_resolution=0.05, use_perfect_depth_map=False, 
+def compute_trajectory(params, macarons, camera, gt_scene, surface_scene,
+                           proxy_scene, covered_scene, mesh, intersector, device, settings,
+                           depth_provider, test_resolution=0.05,
                            compute_collision=False):
 
     macarons.eval()
@@ -427,16 +380,18 @@ def compute_trajectory(params, macarons, camera, gt_scene, surface_scene,
     coverage_evolution = []
 
     def process_current_frame():
-        current_frame = load_current_frame_perfect_depth(camera, device)
-        depth, mask, error_mask, R, T = apply_perfect_depth_simple(current_frame, device)
-        
+        depth_frame = depth_provider.get_frame(DepthObservation(camera=camera, device=device))
+        depth = depth_frame.depth_z
+        mask = depth_frame.valid_mask
+        error_mask = depth_frame.error_mask
+
         # 获取相机在世界坐标中的位置
-        fov_camera = camera.get_fov_camera_from_RT(R_cam=R, T_cam=T)
-        X_cam = fov_camera.get_camera_center() 
-        
+        fov_camera = camera.get_fov_camera_from_RT(R_cam=depth_frame.R, T_cam=depth_frame.T)
+        X_cam = fov_camera.get_camera_center()
+
         # 计算点云
         part_pc, part_pc_features = camera.compute_partial_point_cloud(
-            depth=depth, mask=(mask * error_mask).bool(), images=current_frame['rgb'],
+            depth=depth, mask=(mask * error_mask).bool(), images=depth_frame.rgb,
             fov_cameras=fov_camera,
             gathering_factor=params.gathering_factor,
             fov_range=params.sensor_range
@@ -461,8 +416,8 @@ def compute_trajectory(params, macarons, camera, gt_scene, surface_scene,
             'fov_proxy_points': fov_proxy_points,
             'fov_proxy_mask': fov_proxy_mask,
             'sgn_dists': sgn_dists,
-            'X_cam': X_cam,  
-            'current_frame': current_frame
+            'X_cam': X_cam,
+            'depth_frame': depth_frame
         }
             
     pose_i = 0
@@ -586,6 +541,7 @@ def run_test(params_name,
              test_scenes,
              test_resolution=0.05,
              use_perfect_depth_map=False,
+             kind_depth_map=None,
              compute_collision=False,
              load_json=False,
              dataset_path=None):
@@ -614,6 +570,14 @@ def run_test(params_name,
 
     # Setup device
     device = setup_device(params, None)
+
+    depth_provider = create_depth_provider(
+        {
+            'use_perfect_depth_map': use_perfect_depth_map,
+            'kind_depth_map': kind_depth_map,
+        },
+        device=device,
+    )
 
     # Setup model and dataloader
     dataloader, macarons, memory = setup_test(params, weights_path, device)
@@ -727,8 +691,8 @@ def run_test(params_name,
                                                                                       intersector,
                                                                                       device,
                                                                                       settings,
+                                                                                      depth_provider=depth_provider,
                                                                                       test_resolution=test_resolution,
-                                                                                      use_perfect_depth_map=use_perfect_depth_map,
                                                                                       compute_collision=compute_collision)
                 
 

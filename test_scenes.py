@@ -30,6 +30,7 @@ if __name__ == '__main__':
                  test_scenes=test_params.test_scenes,
                  test_resolution=test_params.test_resolution,
                  use_perfect_depth_map=test_params.use_perfect_depth_map,
+                 kind_depth_map=getattr(test_params, 'kind_depth_map', None),
                  compute_collision=test_params.compute_collision,
                  load_json=test_params.load_json,
                  dataset_path=test_params.dataset_path)
