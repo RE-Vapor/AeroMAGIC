@@ -14,14 +14,21 @@ Below is a detailed description of all the hyperparameters involved in evaluatin
 | `results_json_name` | str | Name of the json file in which results will be saved. |
 | `test_resolution` | str | Distance threshold used to compute surface coverage during evaluation. |
 | `use_perfect_depth_map` | bool | Selects renderer ground-truth depth when `true`. This flag has priority over `kind_depth_map`; the default remains `true` for backward-compatible evaluation. |
-| `kind_depth_map` | str | Case-insensitive registered depth backend selected only when `use_perfect_depth_map` is `false`. Whitespace is ignored. Missing, empty, `GT`, `NONE`, or unregistered values fail during startup; there is no GT fallback. `DA3` is reserved for the separately installed DA3 adapter. |
+| `kind_depth_map` | str | Case-insensitive registered depth backend selected only when `use_perfect_depth_map` is `false`. Whitespace is ignored. Missing, empty, `GT`, `NONE`, or unregistered values fail during startup; there is no GT fallback. `DA3` selects the pinned Depth Anything 3 adapter. |
+| `da3_model_id` / `da3_model_revision` | str | Hugging Face model and immutable revision. The default nested model supplies metric depth. |
+| `da3_window_size` | int | Maximum number of recent RGB/pose frames used for pose-conditioned inference. |
+| `da3_process_res` / `da3_process_res_method` | int / str | DA3 preprocessing resolution and resize method. |
+| `da3_output_height` / `da3_output_width` | int | Planning output size; defaults to `256 x 456`. |
+| `da3_confidence_percentile` | float | Per-frame percentile used to form the confidence/error mask. |
 
 Depth-source selection is intentionally strict. With `use_perfect_depth_map=true`,
 the GT provider is constructed and `kind_depth_map` is ignored, even if it is
 missing or names another backend. With `use_perfect_depth_map=false`, the named
-non-GT backend must already be registered. In the stage-1 baseline only GT is
-registered, so `false + DA3` fails explicitly until the DA3 adapter registers
-it. Training uses the separate `use_perfect_depth` option and is unchanged.
+non-GT backend must already be registered. DA3 imports and model construction
+remain lazy, so the GT path does not load DA3. The DA3 cache is stored below the
+captured-frame directory and is isolated by RGB content, camera parameters,
+model/revision, preprocessing, scene scale, and adapter version. Training uses
+the separate `use_perfect_depth` option and is unchanged.
 
 ## 2. 3D object reconstruction with a depth sensor
 

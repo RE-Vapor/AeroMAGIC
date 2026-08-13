@@ -12,6 +12,7 @@ from macarons.utility.depth_sources import (
     GTDepthProvider,
     create_depth_provider,
     register_depth_provider,
+    registered_depth_providers,
 )
 
 
@@ -228,10 +229,17 @@ class PlanningEntryPointRegressionTests(unittest.TestCase):
         self.assertEqual(config["kind_depth_map"], "DA3")
         self.assertIsInstance(create_depth_provider(config, device="cpu"), GTDepthProvider)
 
-    def test_default_registry_has_no_implicit_da3_or_gt_fallback(self):
-        with self.assertRaisesRegex(ValueError, r"supported: \(none registered\)"):
+    def test_default_registry_has_explicit_lazy_da3_without_gt_fallback(self):
+        self.assertIn("DA3", registered_depth_providers())
+        provider = create_depth_provider(
+            {"use_perfect_depth_map": False, "kind_depth_map": "DA3"},
+            device="cpu",
+        )
+        self.assertEqual(provider.source, "DA3")
+
+        with self.assertRaisesRegex(ValueError, "Unsupported kind_depth_map"):
             create_depth_provider(
-                {"use_perfect_depth_map": False, "kind_depth_map": "DA3"},
+                {"use_perfect_depth_map": False, "kind_depth_map": "NONE"},
                 device="cpu",
             )
 

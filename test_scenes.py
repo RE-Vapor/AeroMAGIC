@@ -33,5 +33,6 @@ if __name__ == '__main__':
                  kind_depth_map=getattr(test_params, 'kind_depth_map', None),
                  compute_collision=test_params.compute_collision,
                  load_json=test_params.load_json,
-                 dataset_path=test_params.dataset_path)
+                 dataset_path=test_params.dataset_path,
+                 depth_config=test_params)
 
