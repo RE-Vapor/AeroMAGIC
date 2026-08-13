@@ -148,6 +148,38 @@ Eiffel 高度标定与 125 m ground-width 交叉检查相差约 10%。合理 sca
 resolution 672、mapping radius 0.5×、carving tolerance 20。矩阵 manifest 会逐项列出
 `unselected_ablations`，不会把未运行配置描述成结果。
 
+## 101 观测 GPU 0 扩展运行
+
+应后续请求，另在 GPU 0 上把 Eiffel / MAGICIAN / DA3 的观测预算从 6 提到 101；
+其余公平配置保持一致：起点 0、random/torch seed 8/9、beam width/steps 2×2、
+collision=true、mapping gathering multiplier 1.0、DA3 window 3 / resolution 504。
+这是同一配置的长预算扩展，不是 Eiffel/Colosseum 或不同 planner 之间的横向排名。
+
+| 指标 | 101 观测结果 | 六视图 MAGICIAN/DA3 |
+| --- | ---: | ---: |
+| final normalized coverage | 0.806186 | 0.082847 |
+| best normalized coverage | 0.807052 @ frame 94 | 0.082847 @ frame 5 |
+| final raw coverage | 0.780272 | — |
+| 最终点数 | 483,655 | 35,016 |
+| 轨迹长度 (m) | 2,454.714 | 157.758 |
+| 在线轨迹 / provider (s) | 202.990 / 70.446 | 42.084 / 31.829 |
+| wall time (s) | 266.242 | — |
+| peak alloc / reserved (MiB) | 11,060.7 / 12,122 | 11,059.7 / 12,114 |
+
+normalized coverage 里程碑（frame 0/5/24/49/74/100）为
+`[0, 0.083050, 0.292028, 0.673172, 0.762596, 0.806186]`。coverage 每帧按当前
+重建 surface 重算，所以中间序列不保证单调；最终值不等同于历史最大值。离线诊断覆盖
+7,100,952 个 paired pixels：depth MAE/RMSE `11.716/32.589 m`、AbsRel `0.3224`、
+δ<1.25 `0.7868`、ray-geometry MAE `14.144 m`、confidence-error Pearson
+`-0.2308`、test-fit scale-only factor `0.9926`。
+
+首个长预算尝试在 frame 14 暴露出 DA3 内部 estimated-pose Umeyama alignment 的
+`Degenerate covariance rank` 异常。输入相机中心已通过非共线秩门禁，退化发生在模型
+估计 pose 的对齐阶段。adapter 现在只对这一精确 `evo.core.geometry.GeometryException`
+做一次无 pose conditioning 重试；其他异常仍直接抛出。完成运行中 frame
+`14/58/71/72` 的四个窗口触发该回退，101/101 观测完成、exit 0、CUDA OOM 0；
+回归测试覆盖该分支，完整单测 41/41 通过。
+
 ## 运行证据与失败披露
 
 - 主实验：`results/eiffel_phase4_main_validated/{manifest.json,executions.json}` 和每个
@@ -155,7 +187,9 @@ resolution 672、mapping radius 0.5×、carving tolerance 20。矩阵 manifest �
 - 六个主消融：`results/eiffel_phase4_ablations/`；6/6 exit 0。
 - confidence p75/p90 tie 诊断：`results/eiffel_phase4_confidence_p75/` 与
   `results/eiffel_phase4_confidence_p90/`；均 exit 0。
-- `python -m unittest discover -s tests -v`：40 tests，全部通过。
+- 101 观测扩展运行：`results/eiffel_phase4_magician_da3_101_gpu0_v2/`，exit 0；
+  online/diagnostic JSON、运行日志与预览均已生成。
+- `python -m unittest discover -s tests -v`：41 tests，全部通过。
 - `scripts/validate_pytorch3d_runtime.py --device cuda:1`：5/5 checks 通过。
 
 在 accepted evidence 之前有两个不计入结论的失败尝试：一次在线 coverage tuple 的

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "date": "2026-08-13",
   "issue": "MYL-13",
   "scope": "eiffel_single_scene_only",
@@ -13,7 +13,7 @@
     "gpu": "NVIDIA GeForce RTX 3090",
     "driver": "535.230.02",
     "pytorch3d_cuda_checks_passed": 5,
-    "unit_tests_passed": 40
+    "unit_tests_passed": 41
   },
   "fairness": {
     "scene": "eiffel",
@@ -112,6 +112,38 @@
     "mapping_radius_2x": {"coverage": 0.0373701481428555, "final_points": 35019},
     "carving_tolerance_5": {"coverage": 0.03747211307639671, "final_points": 17508}
   },
+  "extended_runs": {
+    "magician_da3_101_gpu0": {
+      "run_id": "main_magician_da3_101_gpu0_v2",
+      "gpu": 0,
+      "budget_observations": 101,
+      "beam_width": 2,
+      "beam_steps": 2,
+      "compute_collision": true,
+      "coverage_final_normalized": 0.8061857470436206,
+      "coverage_best_normalized": 0.8070524489787211,
+      "coverage_best_frame_id": 94,
+      "coverage_final_raw": 0.7802723773808349,
+      "final_points": 483655,
+      "path_meters": 2454.714342850457,
+      "trajectory_seconds": 202.99014285905287,
+      "wall_seconds": 266.242,
+      "provider_seconds": 70.44629241805524,
+      "geometry_seconds": 1.7221516333520412,
+      "peak_allocated_mib": 11060.69287109375,
+      "peak_reserved_mib": 12122.0,
+      "pose_conditioned_frames": 70,
+      "degenerate_pose_alignment_fallback_frame_ids": [14, 58, 71, 72],
+      "depth_mae_meters": 11.716419995499267,
+      "depth_rmse_meters": 32.588694420300335,
+      "depth_abs_rel": 0.32242365985874405,
+      "depth_delta_1_25": 0.786772252509241,
+      "ray_geometry_mae_meters": 14.143575887442607,
+      "confidence_error_pearson": -0.2307840933042841,
+      "test_fit_scale_only_factor": 0.9926444823332109,
+      "exit_code": 0
+    }
+  },
   "not_run_but_configured": [
     "confidence_p25",
     "scale_midpoint",
@@ -122,6 +154,7 @@
   ],
   "accepted_execution_exit_codes": {
     "main": [0, 0, 0, 0],
-    "selected_ablations": [0, 0, 0, 0, 0, 0, 0, 0]
+    "selected_ablations": [0, 0, 0, 0, 0, 0, 0, 0],
+    "extended_runs": [0]
   }
 }
