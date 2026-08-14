@@ -14,6 +14,11 @@ from ..utility.planning_depth import (
     process_planning_depth_frame,
     set_planning_seeds,
     update_proxy_state,
+    validation_uses_occupied_pose,
+)
+from ..utility.scene_transform import (
+    resolve_scene_mesh_transform,
+    transform_scene_vertices,
 )
 from ..utility.experiment_metrics import (
     create_trajectory_metrics_recorder,
@@ -188,7 +193,7 @@ results_dir = os.path.join(dir_path, "../../results/scene_exploration")
 weights_dir = os.path.join(dir_path, "../../weights/macarons")
 configs_dir = os.path.join(dir_path, "../../configs/macarons")
 
-def setup_test(params, model_path, device, verbose=True):
+def setup_test(params, model_path, device, verbose=True, use_occupied_pose=True):
     # Create dataloader
     _, _, test_dataloader = get_dataloader(train_scenes=params.train_scenes,
                                            val_scenes=params.val_scenes,
@@ -196,7 +201,8 @@ def setup_test(params, model_path, device, verbose=True):
                                            batch_size=1,
                                            ddp=False, jz=False,
                                            world_size=None, ddp_rank=None,
-                                           data_path=params.data_path)
+                                           data_path=params.data_path,
+                                           use_occupied_pose=use_occupied_pose)
     print("\nThe following scenes will be used to test the model:")
     for batch, elem in enumerate(test_dataloader):
         print(elem['scene_name'][0])
@@ -760,7 +766,12 @@ def run_magician_test(params_name,
     )
 
     # Setup model and dataloader
-    dataloader, macarons, memory = setup_test(params, weights_path, device)
+    dataloader, macarons, memory = setup_test(
+        params,
+        weights_path,
+        device,
+        use_occupied_pose=validation_uses_occupied_pose(test_params),
+    )
 
     params.beam_width = test_params.beam_width
     params.beam_steps = test_params.beam_steps
@@ -775,7 +786,7 @@ def run_magician_test(params_name,
         scene_names = [scene_dict['scene_name']]
         obj_names = [scene_dict['obj_name']]
         all_settings = [scene_dict['settings']]
-        occupied_pose_datas = [scene_dict['occupied_pose']]
+        occupied_pose_datas = [scene_dict.get('occupied_pose')]
 
         batch_size = len(scene_names)
 
@@ -798,16 +809,22 @@ def run_magician_test(params_name,
 
             mirrored_scene = False
             mirrored_axis = None
+            mesh_transform = resolve_scene_mesh_transform(test_params, scene_name)
 
             # Load mesh
             mesh = load_scene(mesh_path, params.scene_scale_factor, device,
-                              mirror=mirrored_scene, mirrored_axis=mirrored_axis)
+                              mirror=mirrored_scene, mirrored_axis=mirrored_axis,
+                              mesh_transform=mesh_transform)
            
             mesh_for_check = trimesh.load(mesh_path)
 
             if isinstance(mesh_for_check, trimesh.Scene):
                 mesh_for_check = mesh_for_check.dump(concatenate=True)
-            mesh_for_check.vertices *= params.scene_scale_factor
+            mesh_for_check.vertices = transform_scene_vertices(
+                mesh_for_check.vertices,
+                mesh_transform,
+                scene_scale_factor=params.scene_scale_factor,
+            )
 
             intersector = mesh_for_check.ray
 

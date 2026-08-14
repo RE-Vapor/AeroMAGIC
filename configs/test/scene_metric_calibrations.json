@@ -31,6 +31,39 @@
         "relative_difference_from_height_calibration": 0.1001712597761191
       },
       "scope": "Height-anchored asset calibration. The 10.0% footprint cross-check difference is retained as mesh-model uncertainty; this is not a survey-grade reconstruction."
+    },
+    "12-NW-6C-5": {
+      "scene_units_per_meter": 1.0,
+      "physical_reference": {
+        "feature": "dataset-native 150 meter tile grid encoded by Tile_+304_+147",
+        "meters": 150.0,
+        "source": "https://huggingface.co/datasets/sli016/Macarons-plus-plus/tree/d9510f553fcc02e1fc1dc01ea56647fe4bc50c51",
+        "source_revision": "d9510f553fcc02e1fc1dc01ea56647fe4bc50c51",
+        "source_owner": "Official Macarons++ dataset",
+        "evidence": "raw x/y bounds straddle 304*150..305*150 and 147*150..148*150 with sub-meter exporter overlap"
+      },
+      "mesh_measurement": {
+        "path": "data/Macarons++/12-NW-6C-5/Tile_+304_+147.obj",
+        "sha256": "9b74437fb79035ee48b3021ba48f8bd1d285f7eb803d03eef2493a5e181b1825",
+        "vertex_count": 72585,
+        "raw_axis_order": ["x", "y", "z"],
+        "raw_bounds_min": [45599.648438, 22049.648438, -0.268],
+        "raw_bounds_max": [45750.351562, 22200.349609, 31.527714],
+        "raw_extents": [150.703124, 150.701171, 31.795714],
+        "tile_center": [45675.0, 22125.0],
+        "planning_axis_order": ["x", "z", "-y"],
+        "preprocess_scale": 0.1,
+        "scene_scale_factor": 10.0
+      },
+      "formula": "1 meter_per_raw_unit * 0.1 preprocessed_units_per_raw_unit * 10 scene_units_per_preprocessed_unit",
+      "cross_check": {
+        "feature": "transformed mesh extents versus independent settings.json scene envelope",
+        "transformed_pre_runtime_extents": [15.0703124, 3.1795714, 15.0701171],
+        "settings_pre_runtime_extents": [15.3, 3.3, 15.3],
+        "horizontal_total_margin": [0.2296876, 0.2298829],
+        "vertical_axis_check": "raw z extent 31.795714 m becomes planning y extent 3.1795714 before the existing runtime x10 scale and 31.795714 scene units after it, inside the independent 3.3/33.0 settings envelope"
+      },
+      "scope": "Dataset-native metric tile calibration for 12-NW-6C-5 only. The transform is a proper z-up to y-up rotation, recentering, and 0.1 preprocessing scale; it must not be reused for Eiffel or other scenes."
     }
   }
 }

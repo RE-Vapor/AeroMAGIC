@@ -26,6 +26,8 @@ Below is a detailed description of all the hyperparameters involved in evaluatin
 | `validation_max_start_positions` | int | Optional number of configured start poses to exercise. Omit it to run every start pose. |
 | `validation_memory_dir_name` | str | Optional plain directory name that isolates validation captures from production/test memories. Paths and traversal components are rejected. |
 | `validation_n_gt_surface_points` / `validation_n_proxy_points` | int | Optional short-run capacity overrides. Omit them to retain the training configuration. |
+| `scene_mesh_transforms` | object | Optional per-scene exporter/world-coordinate adaptation. Each entry may specify an axis permutation, axis signs, translation, and positive preprocessing scale. Missing scenes use the identity transform. |
+| `validation_use_occupied_pose` | bool | Defaults to `true`. Set `false` only for a validated custom scene without `occupied_pose.pt`; mesh collision checks remain independent. |
 
 Depth-source selection is intentionally strict. With `use_perfect_depth_map=true`,
 the GT provider is constructed and `kind_depth_map` is ignored, even if it is
@@ -43,6 +45,15 @@ the separate `use_perfect_depth` option and is unchanged.
 accepted metric scales. `test_da3_eiffel_real_mesh_config.json` is the bounded
 three-view configuration used to validate both planning entry points against a
 real Macarons++ mesh; its Eiffel value is copied from that evidence manifest.
+`test_da3_12-nw-6c-5_real_mesh_config.json` applies the scene's explicit
+metric-tile recentering/z-up-to-y-up transform and does not reuse Eiffel's
+calibration.
+
+When DA3 is provided as an isolated dependency overlay rather than installed
+in the active environment, use `scripts/run_with_da3_overlay.py` and set
+`MAGICIAN_DA3_APPEND_PATHS` to the source/dependency directories. The paths are
+appended after normal site-packages so an overlay cannot shadow the validated
+CUDA Torch/PyTorch3D build.
 
 ## 1.1 Eiffel fair experiment and diagnostics
 

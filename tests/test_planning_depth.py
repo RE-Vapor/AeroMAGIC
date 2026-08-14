@@ -12,6 +12,7 @@ from macarons.utility.planning_depth import (
     process_planning_depth_frame,
     set_planning_seeds,
     update_proxy_state,
+    validation_uses_occupied_pose,
 )
 
 
@@ -61,6 +62,14 @@ class PlanningValidationLimitTests(unittest.TestCase):
             apply_planning_validation_limits(
                 SimpleNamespace(), {"validation_memory_dir_name": "../outside"}
             )
+
+    def test_occupied_pose_use_is_opt_out_and_strict(self):
+        self.assertTrue(validation_uses_occupied_pose({}))
+        self.assertFalse(
+            validation_uses_occupied_pose({"validation_use_occupied_pose": False})
+        )
+        with self.assertRaisesRegex(ValueError, "validation_use_occupied_pose"):
+            validation_uses_occupied_pose({"validation_use_occupied_pose": 0})
 
     def test_applies_only_allowlisted_experiment_mapping_overrides(self):
         params = SimpleNamespace(gathering_factor=0.05, carving_tolerance=10.0)

@@ -104,6 +104,15 @@ def apply_planning_validation_limits(params: Any, config: Any) -> Optional[int]:
     return max_start_positions
 
 
+def validation_uses_occupied_pose(config: Any) -> bool:
+    """Return the explicit dataset occupancy policy, defaulting to legacy use."""
+
+    value = _config_value(config, "validation_use_occupied_pose", True)
+    if type(value) is not bool:
+        raise ValueError("validation_use_occupied_pose must be a boolean.")
+    return value
+
+
 def set_planning_seeds(config: Any) -> Mapping[str, int]:
     """Set all stochastic sources used by the two planning entry points."""
 
