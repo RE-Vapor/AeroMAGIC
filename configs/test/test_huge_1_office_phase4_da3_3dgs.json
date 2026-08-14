@@ -1,5 +1,5 @@
 {
-  "numGPU": 2,
+  "numGPU": 4,
   "dataset_path": "./data/Macarons++",
   "test_scenes": ["huge_1_office"],
   "params_name": "macarons_huge_1_office_smoke_config.json",
@@ -23,7 +23,7 @@
   "huge_3dgs_scene_name": "huge_1_office",
   "huge_3dgs_ply_path": "/home/ubuntu/Projects/MAGICIAN_MVE/HUGE-Bench/trajectory_generation/scene_annotations/data_3d/1_office/3dgs_ply/point_cloud_utm50.ply",
   "huge_3dgs_manifest_path": "/home/ubuntu/Projects/MAGICIAN_MVE/data/Macarons++/huge_1_office/conversion_manifest.json",
-  "huge_3dgs_render_device": "cuda:3",
+  "huge_3dgs_render_device": "cuda:5",
   "huge_3dgs_render_height": 128,
   "huge_3dgs_render_width": 128,
   "huge_3dgs_alpha_threshold": 0.1,

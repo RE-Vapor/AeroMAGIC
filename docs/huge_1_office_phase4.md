@@ -20,9 +20,9 @@ The depth intervention is the only intended observation-source difference:
   1-1600 m range. Its RGB still comes from the official 3DGS, not from the
   untextured mesh.
 
-The production GPU assignment uses only server GPUs 0-3: perfect planning and
-official 3DGS RGB run on GPUs 0 and 1 respectively; DA3 planning/depth and its
-official 3DGS RGB run on GPUs 2 and 3 respectively. Before either production
+The production GPU assignment uses server GPUs 1, 2, 4, and 5: perfect planning
+and official 3DGS RGB run on GPUs 1 and 2 respectively; DA3 planning/depth and
+its official 3DGS RGB run on GPUs 4 and 5 respectively. Before either production
 run, `scripts/run_huge_office_phase4.sh perfect-regression` exercises the first
 start for eight planning steps with `CUDA_LAUNCH_BLOCKING` explicitly unset.
 This preserves the deterministic regression for the asynchronous PyTorch3D
