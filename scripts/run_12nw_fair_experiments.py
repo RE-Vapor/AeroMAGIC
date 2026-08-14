@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and optionally execute the 12-NW-6C-5 Stage 4 matrix."""
+"""Generate and optionally execute a calibrated 12-NW Stage 4 matrix."""
 
 from __future__ import annotations
 
@@ -15,11 +15,7 @@ import sys
 import time
 from typing import Any, Mapping
 
-from analyze_planning_diagnostics import analyze_online_metrics
-
-
-SCENE = "12-NW-6C-5"
-CALIBRATED_SCENE_UNITS_PER_METER = 1.0
+DEFAULT_SCENE = "12-NW-6C-5"
 
 
 @dataclass(frozen=True)
@@ -34,7 +30,7 @@ class RunSpec:
     note: str = ""
 
 
-def _specs(main_budget: int, sensitivity_budget: int) -> list[RunSpec]:
+def _specs(main_budget: int, sensitivity_budget: int, scene: str) -> list[RunSpec]:
     specs = [
         RunSpec(
             f"main_{planner}_{source}",
@@ -55,12 +51,12 @@ def _specs(main_budget: int, sensitivity_budget: int) -> list[RunSpec]:
         ("confidence_p90", {"da3_confidence_percentile": 90.0}, "Confidence threshold."),
         (
             "scale_0_9",
-            {"da3_scene_units_per_meter": {SCENE: 0.9}},
+            {"da3_scene_units_per_meter": {scene: 0.9}},
             "Offline sensitivity around the evidence-backed 1.0 main scale.",
         ),
         (
             "scale_1_1",
-            {"da3_scene_units_per_meter": {SCENE: 1.1}},
+            {"da3_scene_units_per_meter": {scene: 1.1}},
             "Offline sensitivity around the evidence-backed 1.0 main scale.",
         ),
         ("window_1", {"da3_window_size": 1}, "RGB-only single-frame window."),
@@ -100,21 +96,24 @@ def _merge_config(
     run_root: Path,
     gpu: int,
     collision: bool,
+    scene: str,
+    scene_units_per_meter: float,
+    namespace: str,
 ) -> dict[str, Any]:
     config = dict(base)
     config.update(
         {
             "numGPU": gpu,
-            "test_scenes": [SCENE],
+            "test_scenes": [scene],
             "use_perfect_depth_map": spec.source == "gt",
             "kind_depth_map": "DA3",
-            "da3_scene_units_per_meter": {SCENE: CALIBRATED_SCENE_UNITS_PER_METER},
+            "da3_scene_units_per_meter": {scene: scene_units_per_meter},
             "validation_n_poses_in_trajectory": spec.budget - 1,
             "validation_max_start_positions": spec.max_starts,
-            "validation_memory_dir_name": f"myl20_{spec.run_id}",
-            "scone_lmdb_dir_name": f"myl20_{spec.run_id}_lmdb",
-            "lmdb_dir_name": f"myl20_{spec.run_id}_lmdb",
-            "results_json_name": f"myl20_{spec.run_id}_results.json",
+            "validation_memory_dir_name": f"{namespace}_{spec.run_id}",
+            "scone_lmdb_dir_name": f"{namespace}_{spec.run_id}_lmdb",
+            "lmdb_dir_name": f"{namespace}_{spec.run_id}_lmdb",
+            "results_json_name": f"{namespace}_{spec.run_id}_results.json",
             "compute_collision": collision,
             "beam_width": 10,
             "beam_steps": 10,
@@ -151,11 +150,11 @@ def _write_json(path: Path, value: Any) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--base-config",
-        default="configs/test/test_da3_12-nw-6c-5_real_mesh_config.json",
-    )
-    parser.add_argument("--output-dir", default="results/12-nw-6c-5_phase4")
+    parser.add_argument("--scene", default=DEFAULT_SCENE)
+    parser.add_argument("--namespace")
+    parser.add_argument("--base-config")
+    parser.add_argument("--calibrations", default="configs/test/scene_metric_calibrations.json")
+    parser.add_argument("--output-dir")
     parser.add_argument(
         "--suite", choices=("main", "sensitivities", "all"), default="main"
     )
@@ -172,17 +171,32 @@ def main() -> None:
         parser.error("budgets must include at least two observations")
 
     project_root = Path(__file__).resolve().parents[1]
-    base_path = Path(args.base_config)
+    scene_slug = args.scene.lower()
+    namespace = args.namespace or ("myl20" if args.scene == DEFAULT_SCENE else scene_slug.replace("-", "_"))
+    base_path = Path(
+        args.base_config
+        or f"configs/test/test_da3_{scene_slug}_real_mesh_config.json"
+    )
     if not base_path.is_absolute():
         base_path = project_root / base_path
-    output_dir = Path(args.output_dir)
+    calibrations_path = Path(args.calibrations)
+    if not calibrations_path.is_absolute():
+        calibrations_path = project_root / calibrations_path
+    calibrations = json.loads(calibrations_path.read_text(encoding="utf-8"))
+    try:
+        scene_units_per_meter = float(
+            calibrations["calibrations"][args.scene]["scene_units_per_meter"]
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        parser.error(f"missing valid metric calibration for scene {args.scene}: {error}")
+    output_dir = Path(args.output_dir or f"results/{scene_slug}_phase4")
     if not output_dir.is_absolute():
         output_dir = project_root / output_dir
     base = json.loads(base_path.read_text(encoding="utf-8"))
     requested = set(args.run_id)
     selected = [
         spec
-        for spec in _specs(args.main_budget, args.sensitivity_budget)
+        for spec in _specs(args.main_budget, args.sensitivity_budget, args.scene)
         if (args.suite == "all" or spec.suite == args.suite)
         and (not requested or spec.run_id in requested)
     ]
@@ -193,7 +207,7 @@ def main() -> None:
     manifest = {
         "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "scene": SCENE,
+        "scene": args.scene,
         "scope": "single_scene_only",
         "base_config": str(base_path),
         "invocation": [sys.executable, *sys.argv],
@@ -211,8 +225,10 @@ def main() -> None:
                 if item
             ],
         },
-        "scene_units_per_meter": CALIBRATED_SCENE_UNITS_PER_METER,
-        "main_gt_mesh_reference": "identical transformed 12-NW-6C-5 mesh per run",
+        "calibrations": str(calibrations_path),
+        "namespace": namespace,
+        "scene_units_per_meter": scene_units_per_meter,
+        "main_gt_mesh_reference": f"identical transformed {args.scene} mesh per run",
         "renderer_zbuf_role": "post-run diagnostics only",
         "gt_feedback_to_da3": False,
         "fixed": {
@@ -237,7 +253,16 @@ def main() -> None:
 
     for spec in selected:
         run_root = output_dir / spec.run_id
-        config = _merge_config(base, spec, run_root, args.gpu, args.collision)
+        config = _merge_config(
+            base,
+            spec,
+            run_root,
+            args.gpu,
+            args.collision,
+            args.scene,
+            scene_units_per_meter,
+            namespace,
+        )
         config_path = run_root / "config.json"
         _write_json(config_path, config)
         entrypoint = "test_scenes.py" if spec.planner == "scone" else "test_magician_planning.py"
@@ -290,6 +315,8 @@ def main() -> None:
             if not args.continue_on_error:
                 raise SystemExit(f"{spec.run_id} failed; see {log_path}")
             continue
+        from analyze_planning_diagnostics import analyze_online_metrics
+
         for online_path in sorted((run_root / "metrics").glob("*.online.json")):
             online = json.loads(online_path.read_text(encoding="utf-8"))
             diagnostic = analyze_online_metrics(online)
@@ -302,7 +329,7 @@ def main() -> None:
 
     sensitivity_ids = {
         spec.run_id
-        for spec in _specs(args.main_budget, args.sensitivity_budget)
+        for spec in _specs(args.main_budget, args.sensitivity_budget, args.scene)
         if spec.suite == "sensitivities"
     }
     manifest["unselected_sensitivities"] = sorted(sensitivity_ids - selected_ids)

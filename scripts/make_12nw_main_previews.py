@@ -29,7 +29,6 @@ from macarons.utility.scene_transform import (
 )
 
 
-SCENE = "12-NW-6C-5"
 COLORS = ["#68ddff", "#ffcc66", "#ff6b8a", "#8ee28e", "#bd9cff"]
 
 
@@ -41,12 +40,12 @@ def _sample(values: np.ndarray, limit: int) -> np.ndarray:
     return values[:: max(1, len(values) // limit)]
 
 
-def _mesh_vertices(config: dict) -> np.ndarray:
-    scene_dir = ROOT / config["dataset_path"] / SCENE
+def _mesh_vertices(config: dict, scene: str) -> np.ndarray:
+    scene_dir = ROOT / config["dataset_path"] / scene
     mesh_path = next(scene_dir.glob("*.obj"))
     mesh = trimesh.load(mesh_path, process=False, force="mesh")
     params = _read(ROOT / "configs/macarons" / config["params_name"])
-    transform = resolve_scene_mesh_transform(config, SCENE)
+    transform = resolve_scene_mesh_transform(config, scene)
     return np.asarray(
         transform_scene_vertices(
             np.asarray(mesh.vertices),
@@ -61,7 +60,7 @@ def _metrics(run_root: Path) -> list[dict]:
     return sorted(values, key=lambda item: item["start_index"])
 
 
-def _load_trajectory(config: dict, start_index: int) -> dict:
+def _load_trajectory(config: dict, scene: str, start_index: int) -> dict:
     lmdb_name = config.get("lmdb_dir_name") or config["scone_lmdb_dir_name"]
     env = lmdb.open(
         str(ROOT / "results/scene_exploration" / lmdb_name),
@@ -69,15 +68,20 @@ def _load_trajectory(config: dict, start_index: int) -> dict:
         lock=False,
     )
     with env.begin() as transaction:
-        payload = transaction.get(f"{SCENE}/{start_index}".encode("utf-8"))
+        payload = transaction.get(f"{scene}/{start_index}".encode("utf-8"))
     env.close()
     if payload is None:
-        raise KeyError(f"missing LMDB trajectory {SCENE}/{start_index}")
+        raise KeyError(f"missing LMDB trajectory {scene}/{start_index}")
     return pickle.loads(payload)
 
 
 def _five_start_preview(
-    run_root: Path, config: dict, metrics: list[dict], mesh_vertices: np.ndarray, output: Path
+    run_root: Path,
+    config: dict,
+    scene: str,
+    metrics: list[dict],
+    mesh_vertices: np.ndarray,
+    output: Path,
 ) -> None:
     plt.style.use("dark_background")
     fig, (ax_path, ax_cov) = plt.subplots(1, 2, figsize=(19, 8.5), facecolor="#0d1015")
@@ -97,7 +101,7 @@ def _five_start_preview(
     source = metrics[0]["frames"][0]["source"]
     planner = metrics[0]["planner"].upper()
     fig.suptitle(
-        f"{SCENE} — {planner}/{source} — five-start production preview",
+        f"{scene} — {planner}/{source} — five-start production preview",
         fontsize=22,
     )
     ax_path.set_title("GT mesh reference + camera trajectories (top view)")
@@ -127,6 +131,7 @@ def _five_start_preview(
 
 def _representative_preview(
     config: dict,
+    scene: str,
     metric: dict,
     mesh_vertices: np.ndarray,
     trajectory: dict,
@@ -194,7 +199,7 @@ def _representative_preview(
     source = metric["frames"][0]["source"]
     planner = metric["planner"].upper()
     fig.suptitle(
-        f"{SCENE} — {planner}/{source} — representative start {metric['start_index']}",
+        f"{scene} — {planner}/{source} — representative start {metric['start_index']}",
         fontsize=24,
     )
     fig.text(
@@ -217,19 +222,27 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--scene")
     parser.add_argument("--representative-start", type=int, default=0)
     args = parser.parse_args()
     run_root = Path(args.run_root).resolve()
     output_dir = Path(args.output_dir).resolve()
     config = _read(run_root / "config.json")
+    configured_scenes = config.get("test_scenes", [])
+    if len(configured_scenes) != 1:
+        raise ValueError("preview requires exactly one configured scene")
+    scene = args.scene or configured_scenes[0]
+    if configured_scenes != [scene]:
+        raise ValueError(f"configured scene {configured_scenes[0]} does not match {scene}")
     metrics = _metrics(run_root)
     if [metric["start_index"] for metric in metrics] != [0, 1, 2, 3, 4]:
         raise ValueError("preview requires completed starts 0 through 4")
-    mesh_vertices = _mesh_vertices(config)
+    mesh_vertices = _mesh_vertices(config, scene)
     run_id = metrics[0]["run"]["run_id"]
     _five_start_preview(
         run_root,
         config,
+        scene,
         metrics,
         mesh_vertices,
         output_dir / f"{run_id}_five_trajectory_preview.png",
@@ -237,9 +250,10 @@ def main() -> None:
     representative = next(
         metric for metric in metrics if metric["start_index"] == args.representative_start
     )
-    trajectory = _load_trajectory(config, args.representative_start)
+    trajectory = _load_trajectory(config, scene, args.representative_start)
     _representative_preview(
         config,
+        scene,
         representative,
         mesh_vertices,
         trajectory,

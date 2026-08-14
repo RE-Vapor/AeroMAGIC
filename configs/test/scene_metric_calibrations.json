@@ -64,6 +64,44 @@
         "vertical_axis_check": "raw z extent 31.795714 m becomes planning y extent 3.1795714 before the existing runtime x10 scale and 31.795714 scene units after it, inside the independent 3.3/33.0 settings envelope"
       },
       "scope": "Dataset-native metric tile calibration for 12-NW-6C-5 only. The transform is a proper z-up to y-up rotation, recentering, and 0.1 preprocessing scale; it must not be reused for Eiffel or other scenes."
+    },
+    "12-NW-6C-7": {
+      "scene_units_per_meter": 1.0,
+      "physical_reference": {
+        "feature": "dataset-native 150 meter tile grid encoded by Tile_+301_+146",
+        "meters": 150.0,
+        "source": "https://huggingface.co/datasets/sli016/Macarons-plus-plus/tree/d9510f553fcc02e1fc1dc01ea56647fe4bc50c51",
+        "source_revision": "d9510f553fcc02e1fc1dc01ea56647fe4bc50c51",
+        "source_owner": "Official Macarons++ dataset",
+        "evidence": "source-backup x/y bounds straddle 301*150..302*150 and 146*150..147*150 with sub-meter exporter overlap"
+      },
+      "mesh_measurement": {
+        "path": "data/Macarons++/12-NW-6C-7/Tile_+301_+146.obj",
+        "sha256": "5a9f5f2794ddba344a6f35232cc9129dcddc5ee374ebaa67d248c5160b28200b",
+        "vertex_count": 168755,
+        "source_backup_path": "data/Macarons++/12-NW-6C-7/Tile_+301_+146.obj.bak",
+        "source_backup_sha256": "a75925842a4580800e5f0ca59fd55d521f6dae2a42c648ed2e66d380c4bc4bbb",
+        "source_backup_bounds_min": [45149.648438, 21899.650391, 96.262398],
+        "source_backup_bounds_max": [45300.351562, 22050.351562, 167.149994],
+        "source_backup_extents": [150.703124, 150.701171, 70.887596],
+        "planning_preprocessed_bounds_min": [-7.5351562, 0.0, -7.5351562],
+        "planning_preprocessed_bounds_max": [7.5351562, 7.0887596, 7.5349609],
+        "planning_preprocessed_extents": [15.0703124, 7.0887596, 15.0701171],
+        "preprocessing_materialized_in_obj": true,
+        "planning_transform": "identity",
+        "materialized_preprocess_scale": 0.1,
+        "scene_scale_factor": 10.0
+      },
+      "formula": "1 meter_per_source_unit * materialized 0.1 preprocessed_units_per_source_unit * 10 scene_units_per_preprocessed_unit",
+      "cross_check": {
+        "feature": "preprocessed mesh extents versus independent settings.json scene envelope",
+        "source_to_preprocessed_extents": [15.0703124, 7.0887596, 15.0701171],
+        "current_preprocessed_extents": [15.0703124, 7.0887596, 15.0701171],
+        "settings_pre_runtime_extents": [15.3, 7.2, 15.3],
+        "settings_total_margin": [0.2296876, 0.1112404, 0.2298829],
+        "live_cuda_gate": "All five configured starts produced finite, nonempty PyTorch3D CUDA depth/masks with the identity planning transform."
+      },
+      "scope": "Dataset-native metric tile calibration for 12-NW-6C-7 only. The uploaded OBJ already materializes the y-up recentering and 0.1 preprocessing scale; applying the 12-NW-6C-5 world-coordinate transform again is invalid."
     }
   }
 }

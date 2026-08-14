@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate machine-readable 12-NW-6C-5 online/diagnostic results."""
+"""Aggregate machine-readable single-scene 12-NW results."""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ def _nested(value: Any, *keys: str) -> Any:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--scene", default="12-NW-6C-5")
     parser.add_argument("--results-root", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -43,7 +44,7 @@ def main() -> None:
     rows = []
     for online_path in sorted(root.rglob("*.online.json")):
         online = _read(online_path)
-        if online.get("scene") != "12-NW-6C-5":
+        if online.get("scene") != args.scene:
             continue
         diagnostic_path = online_path.with_name(
             online_path.name.replace(".online.json", ".diagnostic.json")
@@ -208,7 +209,7 @@ def main() -> None:
     result = {
         "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "scene": "12-NW-6C-5",
+        "scene": args.scene,
         "scope": "single_scene_only",
         "results_root": str(root),
         "run_count": len(rows),

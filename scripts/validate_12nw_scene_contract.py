@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the 12-NW-6C-5 transform with the real CUDA rasterizer."""
+"""Validate a calibrated 12-NW scene with the real CUDA rasterizer."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from macarons.utility.scene_transform import (
 )
 
 
-SCENE = "12-NW-6C-5"
+DEFAULT_SCENE = "12-NW-6C-5"
 
 
 def _bounds(vertices) -> list[list[float]]:
@@ -42,30 +42,39 @@ def _write_json(path: Path, value) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--config",
-        default="configs/test/test_da3_12-nw-6c-5_real_mesh_config.json",
-    )
-    parser.add_argument("--output", default="results/12-nw-6c-5_phase4/scene_gate.json")
+    parser.add_argument("--scene", default=DEFAULT_SCENE)
+    parser.add_argument("--config")
+    parser.add_argument("--calibrations", default="configs/test/scene_metric_calibrations.json")
+    parser.add_argument("--output")
     parser.add_argument("--start-index", type=int, default=0)
     args = parser.parse_args()
 
     root = ROOT
-    config_path = Path(args.config)
+    scene_slug = args.scene.lower()
+    config_path = Path(
+        args.config
+        or f"configs/test/test_da3_{scene_slug}_real_mesh_config.json"
+    )
     if not config_path.is_absolute():
         config_path = root / config_path
-    output_path = Path(args.output)
+    calibrations_path = Path(args.calibrations)
+    if not calibrations_path.is_absolute():
+        calibrations_path = root / calibrations_path
+    calibration = json.loads(calibrations_path.read_text(encoding="utf-8"))[
+        "calibrations"
+    ][args.scene]
+    output_path = Path(args.output or f"results/{scene_slug}_phase4/scene_gate.json")
     if not output_path.is_absolute():
         output_path = root / output_path
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    scene_dir = root / config["dataset_path"] / SCENE
+    scene_dir = root / config["dataset_path"] / args.scene
     mesh_path = next(scene_dir.glob("*.obj"))
     settings_dict = json.loads((scene_dir / "settings.json").read_text(encoding="utf-8"))
     params = load_params(root / "configs/macarons" / config["params_name"])
     device = torch.device(f"cuda:{config['numGPU']}")
     torch.cuda.set_device(device)
     settings = Settings(settings_dict, device, params.scene_scale_factor)
-    transform = resolve_scene_mesh_transform(config, SCENE)
+    transform = resolve_scene_mesh_transform(config, args.scene)
 
     mesh = load_scene(
         str(mesh_path),
@@ -122,7 +131,7 @@ def main() -> None:
 
     result = {
         "schema_version": 1,
-        "scene": SCENE,
+        "scene": args.scene,
         "mesh": {
             "path": str(mesh_path.relative_to(root)),
             "sha256": sha256,
@@ -152,15 +161,10 @@ def main() -> None:
             "same_transformed_mesh": True,
         },
         "metric_scale": {
-            "scene_units_per_meter": config["da3_scene_units_per_meter"][SCENE],
-            "primary_evidence": (
-                "Tile indices +304/+147 align with the measured 150-unit horizontal "
-                "grid intervals [304*150,305*150] and [147*150,148*150]."
-            ),
-            "independent_cross_check": (
-                "After the explicit 0.1 preprocessing and existing x10 runtime scale, "
-                "all mesh extents fit the independently supplied settings.json envelope."
-            ),
+            "scene_units_per_meter": config["da3_scene_units_per_meter"][args.scene],
+            "calibration_manifest": str(calibrations_path.relative_to(root)),
+            "primary_evidence": calibration["physical_reference"],
+            "independent_cross_check": calibration["cross_check"],
             "eiffel_scale_reused": False,
         },
         "camera": {
@@ -193,6 +197,11 @@ def main() -> None:
             and inside.all()
             and np.max(np.abs(render_bounds - collision_bounds)) < 1e-4
             and abs(np.linalg.det(rotation) - 1.0) < 1e-8
+            and abs(
+                config["da3_scene_units_per_meter"][args.scene]
+                - calibration["scene_units_per_meter"]
+            )
+            < 1e-12
         ),
     }
     _write_json(output_path, result)

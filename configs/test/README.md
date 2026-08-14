@@ -48,6 +48,12 @@ real Macarons++ mesh; its Eiffel value is copied from that evidence manifest.
 `test_da3_12-nw-6c-5_real_mesh_config.json` applies the scene's explicit
 metric-tile recentering/z-up-to-y-up transform and does not reuse Eiffel's
 calibration.
+`test_da3_12-nw-6c-7_real_mesh_config.json` records an explicit identity
+transform because its uploaded OBJ already materializes recentering, y-up
+rotation, and the 0.1 preprocessing scale. Its `.obj.bak` source and independent
+`settings.json` envelope establish the separate `1.0 scene unit/m` calibration;
+reapplying the 12-NW-6C-5 transform would move the mesh outside all planning
+bounds.
 
 When DA3 is provided as an isolated dependency overlay rather than installed
 in the active environment, use `scripts/run_with_da3_overlay.py` and set

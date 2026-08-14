@@ -67,6 +67,45 @@ class FairRunnerTests(unittest.TestCase):
                     config["use_perfect_depth_map"], run["source"] == "gt"
                 )
 
+    def test_generated_matrix_is_scene_scoped_and_uses_requested_namespace(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory)
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/run_12nw_fair_experiments.py"),
+                    "--scene",
+                    "12-NW-6C-7",
+                    "--namespace",
+                    "myl21",
+                    "--suite",
+                    "main",
+                    "--generate-only",
+                    "--output-dir",
+                    str(output),
+                    "--gpu",
+                    "0",
+                    "--collision",
+                ],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            manifest = json.loads((output / "manifest.json").read_text())
+            self.assertEqual(manifest["scene"], "12-NW-6C-7")
+            self.assertEqual(manifest["namespace"], "myl21")
+            self.assertEqual(manifest["scene_units_per_meter"], 1.0)
+            self.assertIn("12-NW-6C-7", manifest["main_gt_mesh_reference"])
+            for run in manifest["runs"]:
+                config = json.loads(Path(run["config"]).read_text())
+                self.assertEqual(config["test_scenes"], ["12-NW-6C-7"])
+                self.assertEqual(
+                    config["da3_scene_units_per_meter"], {"12-NW-6C-7": 1.0}
+                )
+                self.assertTrue(config["validation_memory_dir_name"].startswith("myl21_"))
+                self.assertTrue(config["lmdb_dir_name"].startswith("myl21_"))
+
 
 if __name__ == "__main__":
     unittest.main()
