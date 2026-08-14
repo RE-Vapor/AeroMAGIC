@@ -347,8 +347,6 @@ def prefilter_gaussians_for_view(
             & (torch.abs(ndc_xy[:, 1]) <= center_limit + radius_y_ndc)
         )
     kept_count = int(keep.sum().item())
-    if kept_count == 0:
-        raise RuntimeError("conservative view prefilter rejected every Gaussian")
     LOGGER.info(
         "conservative view prefilter retained %d/%d Gaussians (%.2f%%)",
         kept_count,

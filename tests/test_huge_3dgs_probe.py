@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -55,6 +56,66 @@ class Huge3dgsProbeTest(unittest.TestCase):
         points_magic = points_huge @ q.T
         r_huge = q.T @ r_magic
         np.testing.assert_allclose(points_magic @ r_magic, points_huge @ r_huge)
+
+    def test_prefilter_returns_empty_buffers_for_an_empty_camera_view(self):
+        torch = PROBE.torch
+        buffers = PROBE.GaussianBuffers(
+            xyz=torch.tensor([[0.0, 0.0, -1.0], [1.0, 1.0, -2.0]]),
+            features_dc=torch.zeros((2, 1, 3)),
+            opacity=torch.ones((2, 1)),
+            scales=torch.ones((2, 3)),
+            rotations=torch.zeros((2, 4)),
+        )
+        camera = SimpleNamespace(
+            FoVx=1.0,
+            FoVy=1.0,
+            world_view_transform=torch.eye(4),
+            full_proj_transform=torch.eye(4),
+        )
+
+        compacted, metadata = PROBE.prefilter_gaussians_for_view(
+            buffers,
+            camera,
+            chunk_size=2,
+            center_margin=0.15,
+        )
+
+        self.assertEqual(compacted.xyz.shape[0], 0)
+        self.assertEqual(metadata["retained_gaussians"], 0)
+        self.assertEqual(metadata["retained_fraction"], 0.0)
+
+    def test_render_returns_black_outputs_for_empty_gaussian_buffers(self):
+        torch = PROBE.torch
+        buffers = PROBE.GaussianBuffers(
+            xyz=torch.empty((0, 3)),
+            features_dc=torch.empty((0, 1, 3)),
+            opacity=torch.empty((0, 1)),
+            scales=torch.empty((0, 3)),
+            rotations=torch.empty((0, 4)),
+        )
+        camera = SimpleNamespace(
+            FoVx=1.0,
+            FoVy=1.0,
+            world_view_transform=torch.eye(4),
+            full_proj_transform=torch.eye(4),
+            camera_center=torch.zeros(3),
+        )
+
+        rendered = PROBE.render_gaussians(
+            buffers,
+            camera,
+            image_height=4,
+            image_width=6,
+            kernel_size=0.0,
+        )
+
+        self.assertEqual(tuple(rendered["rgb"].shape), (3, 4, 6))
+        self.assertEqual(tuple(rendered["alpha"].shape), (1, 4, 6))
+        self.assertEqual(tuple(rendered["expected_depth"].shape), (1, 4, 6))
+        self.assertEqual(tuple(rendered["median_depth"].shape), (1, 4, 6))
+        self.assertEqual(rendered["radii"].numel(), 0)
+        self.assertEqual(int(torch.count_nonzero(rendered["rgb"])), 0)
+        self.assertEqual(int(torch.count_nonzero(rendered["alpha"])), 0)
 
     def test_mask_and_depth_statistics_are_raw_not_fitted(self):
         mesh_mask = np.array([[True, True], [False, False]])
