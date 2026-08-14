@@ -20,7 +20,7 @@ import numpy as np
 from .depth_sources import DepthFrame, DepthObservation, DepthProvider
 
 
-DA3_ADAPTER_VERSION = "1"
+DA3_ADAPTER_VERSION = "2"
 DA3_SOURCE_REVISION = "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4"
 DA3_DEFAULT_MODEL = "depth-anything/DA3NESTED-GIANT-LARGE"
 DA3_DEFAULT_MODEL_REVISION = "8615eefb62f2db4f8d6ebaa59160086981672829"
@@ -222,6 +222,17 @@ def _has_translation_baseline(extrinsics: np.ndarray, epsilon: float = 1e-6) -> 
     centers = camera_to_world[:, :3, 3]
     centered = centers - np.mean(centers, axis=0, keepdims=True)
     return bool(np.linalg.matrix_rank(centered, tol=epsilon) >= 2)
+
+
+def _is_degenerate_pose_alignment_error(error: Exception) -> bool:
+    """Recognize DA3/evo's recoverable estimated-pose alignment failure."""
+
+    error_type = type(error)
+    return (
+        error_type.__name__ == "GeometryException"
+        and error_type.__module__ == "evo.core.geometry"
+        and "Degenerate covariance rank" in str(error)
+    )
 
 
 def _default_frame_loader(path: str, device: Any) -> Mapping[str, Any]:
@@ -547,14 +558,36 @@ class DA3DepthProvider(DepthProvider):
             model = _shared_model(
                 self.model_id, self.model_revision, device, self._model_loader
             )
-            prediction = model.inference(
-                image=list(rgbs),
-                extrinsics=model_extrinsics if pose_conditioned else None,
-                intrinsics=intrinsics if pose_conditioned else None,
-                align_to_input_ext_scale=pose_conditioned,
-                process_res=self.process_res,
-                process_res_method=self.process_res_method,
-            )
+            try:
+                prediction = model.inference(
+                    image=list(rgbs),
+                    extrinsics=model_extrinsics if pose_conditioned else None,
+                    intrinsics=intrinsics if pose_conditioned else None,
+                    align_to_input_ext_scale=pose_conditioned,
+                    process_res=self.process_res,
+                    process_res_method=self.process_res_method,
+                )
+            except Exception as error:
+                if (
+                    not pose_conditioned
+                    or not _is_degenerate_pose_alignment_error(error)
+                ):
+                    raise
+                pose_conditioned = False
+                metadata["camera"]["pose_conditioned"] = False
+                metadata["camera"]["pose_conditioning_fallback"] = (
+                    "degenerate_model_pose_alignment"
+                )
+                key = _cache_key(metadata)
+                cache_path = self._cache_root(camera) / f"{key}.npz"
+                prediction = model.inference(
+                    image=list(rgbs),
+                    extrinsics=None,
+                    intrinsics=None,
+                    align_to_input_ext_scale=False,
+                    process_res=self.process_res,
+                    process_res_method=self.process_res_method,
+                )
             raw_depth = _prediction_value(prediction, "depth")
             if raw_depth is None:
                 raise ValueError("DA3 prediction is missing depth.")

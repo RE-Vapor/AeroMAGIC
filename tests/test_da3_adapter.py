@@ -58,6 +58,23 @@ class _FakeModel:
         return self.prediction_factory(len(kwargs["image"]))
 
 
+class GeometryException(RuntimeError):
+    pass
+
+
+GeometryException.__module__ = "evo.core.geometry"
+
+
+class _DegeneratePoseAlignmentModel(_FakeModel):
+    def inference(self, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs["extrinsics"] is not None:
+            raise GeometryException(
+                "Degenerate covariance rank, Umeyama alignment is not possible"
+            )
+        return self.prediction_factory(len(kwargs["image"]))
+
+
 class _ModelLoader:
     def __init__(self, model):
         self.model = model
@@ -225,6 +242,31 @@ class DA3ProviderTests(unittest.TestCase):
             collinear.get_frame(DepthObservation(_Camera(directory, 3)))
             self.assertIsNone(model.calls[-1]["extrinsics"])
             self.assertIs(model.calls[-1]["align_to_input_ext_scale"], False)
+
+    def test_degenerate_model_pose_alignment_retries_without_pose_conditioning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._touch_frames(directory, 3)
+            frames = {index: _frame(index) for index in range(3)}
+            model = _DegeneratePoseAlignmentModel()
+            provider, _ = self._provider(
+                directory,
+                frames,
+                model,
+                da3_window_size=3,
+                da3_cache_enabled=False,
+            )
+
+            result = provider.get_frame(DepthObservation(_Camera(directory, 3)))
+
+            self.assertEqual(len(model.calls), 2)
+            self.assertIsNotNone(model.calls[0]["extrinsics"])
+            self.assertIsNone(model.calls[1]["extrinsics"])
+            self.assertIs(model.calls[1]["align_to_input_ext_scale"], False)
+            self.assertIs(result.cache_metadata["camera"]["pose_conditioned"], False)
+            self.assertEqual(
+                result.cache_metadata["camera"]["pose_conditioning_fallback"],
+                "degenerate_model_pose_alignment",
+            )
 
     def test_metric_scale_validity_and_confidence_masks(self):
         def prediction(count):
