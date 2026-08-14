@@ -8,7 +8,9 @@ from macarons.utility.planning_depth import (
     apply_planning_validation_limits,
     compute_planning_coverage,
     create_scene_depth_providers,
+    path_is_blocked,
     process_planning_depth_frame,
+    set_planning_seeds,
     update_proxy_state,
 )
 
@@ -42,6 +44,9 @@ class PlanningValidationLimitTests(unittest.TestCase):
         params = SimpleNamespace(n_poses_in_trajectory=100)
         self.assertIsNone(apply_planning_validation_limits(params, {}))
         self.assertEqual(params.n_poses_in_trajectory, 100)
+        self.assertFalse(params.planning_shared_collision_gate)
+        self.assertFalse(params.planning_normalize_coverage_by_visibility)
+        self.assertFalse(hasattr(params, "planning_gathering_factor_multiplier"))
 
     def test_rejects_invalid_limits(self):
         with self.assertRaisesRegex(ValueError, "validation_n_poses_in_trajectory"):
@@ -56,6 +61,48 @@ class PlanningValidationLimitTests(unittest.TestCase):
             apply_planning_validation_limits(
                 SimpleNamespace(), {"validation_memory_dir_name": "../outside"}
             )
+
+    def test_applies_only_allowlisted_experiment_mapping_overrides(self):
+        params = SimpleNamespace(gathering_factor=0.05, carving_tolerance=10.0)
+        apply_planning_validation_limits(
+            params,
+            {
+                "experiment_param_overrides": {
+                    "planning_gathering_factor_multiplier": 2.0,
+                    "carving_tolerance": 5.0,
+                },
+                "experiment_shared_collision_gate": True,
+                "experiment_normalize_coverage_by_visibility": True,
+            },
+        )
+        self.assertEqual(params.planning_gathering_factor_multiplier, 2.0)
+        self.assertEqual(params.carving_tolerance, 5.0)
+        self.assertTrue(params.planning_shared_collision_gate)
+        self.assertTrue(params.planning_normalize_coverage_by_visibility)
+        with self.assertRaisesRegex(ValueError, "Unsupported"):
+            apply_planning_validation_limits(
+                SimpleNamespace(), {"experiment_param_overrides": {"n_poses_in_trajectory": 1}}
+            )
+
+    def test_fixed_seed_helper_and_shared_collision_gate(self):
+        self.assertEqual(
+            set_planning_seeds({"random_seed": 8, "torch_seed": 9}),
+            {"random_seed": 8, "torch_seed": 9},
+        )
+        calls = []
+
+        def intersects(start, end, mesh):
+            calls.append((start, end, mesh))
+            return True
+
+        self.assertFalse(
+            path_is_blocked(1, 2, 3, compute_collision=False, intersection_fn=intersects)
+        )
+        self.assertEqual(calls, [])
+        self.assertTrue(
+            path_is_blocked(1, 2, 3, compute_collision=True, intersection_fn=intersects)
+        )
+        self.assertEqual(calls, [(1, 2, 3)])
 
 
 class SceneProviderTests(unittest.TestCase):

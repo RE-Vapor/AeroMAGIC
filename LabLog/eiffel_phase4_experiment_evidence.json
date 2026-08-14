@@ -1,0 +1,160 @@
+{
+  "schema_version": 2,
+  "date": "2026-08-13",
+  "issue": "MYL-13",
+  "scope": "eiffel_single_scene_only",
+  "base_commit": "52c4321859acf399f6ea7353bf12c2abaa09c16a",
+  "runtime": {
+    "platform": "Linux-5.15.0-139-generic-x86_64-with-glibc2.35",
+    "python": "3.10.4",
+    "torch": "2.4.1+cu121",
+    "torch_cuda": "12.1",
+    "pytorch3d": "0.7.9",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "driver": "535.230.02",
+    "pytorch3d_cuda_checks_passed": 5,
+    "unit_tests_passed": 41
+  },
+  "fairness": {
+    "scene": "eiffel",
+    "start_index": 0,
+    "random_seed": 8,
+    "torch_seed": 9,
+    "budget_observations": 6,
+    "compute_collision": true,
+    "gt_mesh_pose_validity_prior": true,
+    "gt_mesh_segment_collision_prior": true,
+    "gt_mesh_reference_shared": true,
+    "mapping_gathering_factor_multiplier": 1.0,
+    "renderer_zbuf_role": "post_run_diagnostic_only",
+    "gt_feedback_to_da3": false,
+    "magician_rade_gs_prior": true,
+    "scone_rade_gs_prior": false
+  },
+  "scale_sensitivity_interval_scene_units_per_meter": [
+    0.23766064,
+    0.2641176363636364
+  ],
+  "main": {
+    "scone_gt": {
+      "coverage": [0.0, 0.00616887847924354, 0.013612318627752274, 0.023197022380626535, 0.11950290211030462, 0.20112583141004767],
+      "final_points": 8196,
+      "path_meters": 37.86191690066478,
+      "trajectory_seconds": 10.060653626918793,
+      "provider_seconds": 0.011628829874098301,
+      "peak_allocated_mib": 1866.7763671875,
+      "peak_reserved_mib": 2278.0,
+      "depth_mae_meters": 0.000007528835386162136,
+      "ray_geometry_mae_meters": 0.0
+    },
+    "scone_da3": {
+      "coverage": [0.0, 0.0, 0.0, 0.0, 0.0, 0.05812001211849286],
+      "final_points": 28901,
+      "path_meters": 31.551607046004044,
+      "trajectory_seconds": 37.09138655802235,
+      "provider_seconds": 24.833988530095667,
+      "peak_allocated_mib": 11057.7734375,
+      "peak_reserved_mib": 12590.0,
+      "depth_mae_meters": 179.83451957180316,
+      "depth_rmse_meters": 283.842315244723,
+      "depth_abs_rel": 0.6945643907022037,
+      "depth_delta_1_25": 0.28733334583434905,
+      "ray_geometry_mae_meters": 199.26193479257037,
+      "test_fit_scale_only_factor": 1.1796441409662017,
+      "confidence_error_pearson": -0.2889197593442882
+    },
+    "magician_gt": {
+      "coverage": [0.0, 0.0, 0.0, 0.0, 0.0, 0.011369090089845534],
+      "final_points": 402,
+      "path_meters": 170.37862605299154,
+      "trajectory_seconds": 8.671315221115947,
+      "provider_seconds": 0.010807373560965061,
+      "peak_allocated_mib": 1497.498046875,
+      "peak_reserved_mib": 1722.0,
+      "depth_mae_meters": 0.0000013607850860054696,
+      "ray_geometry_mae_meters": 0.0
+    },
+    "magician_da3": {
+      "coverage": [0.0, 0.0, 0.03747211307639671, 0.05026871223581927, 0.07112054114499784, 0.08284650850223763],
+      "final_points": 35016,
+      "path_meters": 157.75799190049497,
+      "trajectory_seconds": 42.08405212266371,
+      "provider_seconds": 31.828644508495927,
+      "peak_allocated_mib": 11059.73876953125,
+      "peak_reserved_mib": 12114.0,
+      "depth_mae_meters": 9.634833867219372,
+      "depth_rmse_meters": 13.535878956952702,
+      "depth_abs_rel": 0.4057539217227112,
+      "depth_delta_1_25": 0.4842876458195768,
+      "ray_geometry_mae_meters": 11.52985180678243,
+      "test_fit_scale_only_factor": 0.8623477543371143,
+      "confidence_error_pearson": -0.18567130891934736
+    }
+  },
+  "smoke_diagnosis": {
+    "scone_da3_three_view_coverage": [0.0, 0.0, 0.0],
+    "magician_da3_three_view_coverage": [0.0, 0.0, 0.03747211307639671],
+    "scone_camera_center_translation_before_view_3": false,
+    "scone_pose_conditioning_at_view_3": false,
+    "magician_camera_center_translation_before_view_3": true,
+    "magician_pose_conditioning_at_view_3": true,
+    "mapping_radius_2x_three_view_coverage": 0.0373701481428555,
+    "diagnosis": "short_budget_policy_trajectory_and_pose_conditioning_not_point_density"
+  },
+  "ablations_three_view_magician_da3": {
+    "baseline": {"coverage": 0.03747211307639671, "final_points": 17508},
+    "confidence_p50_tie_noop": {"coverage": 0.03747211307639671, "final_points": 17508},
+    "confidence_p75_tie_noop": {"coverage": 0.03747211307639671, "final_points": 17508},
+    "confidence_p90": {"coverage": 0.00892193168485636, "final_points": 7002, "later_frame_planning_ratio": 0.10000342653508772},
+    "scale_width_endpoint": {"coverage": 0.036452463740984556, "final_points": 17508, "depth_mae_meters": 15.253481804736714},
+    "window_1": {"coverage": 0.0, "final_points": 17508, "depth_mae_meters": 21.736845360984855, "test_fit_scale_only_factor": 3.9757680171556515},
+    "process_resolution_336": {"coverage": 0.032220918999024115, "final_points": 17508, "peak_allocated_mib": 10789.87548828125},
+    "mapping_radius_2x": {"coverage": 0.0373701481428555, "final_points": 35019},
+    "carving_tolerance_5": {"coverage": 0.03747211307639671, "final_points": 17508}
+  },
+  "extended_runs": {
+    "magician_da3_101_gpu0": {
+      "run_id": "main_magician_da3_101_gpu0_v2",
+      "gpu": 0,
+      "budget_observations": 101,
+      "beam_width": 2,
+      "beam_steps": 2,
+      "compute_collision": true,
+      "coverage_final_normalized": 0.8061857470436206,
+      "coverage_best_normalized": 0.8070524489787211,
+      "coverage_best_frame_id": 94,
+      "coverage_final_raw": 0.7802723773808349,
+      "final_points": 483655,
+      "path_meters": 2454.714342850457,
+      "trajectory_seconds": 202.99014285905287,
+      "wall_seconds": 266.242,
+      "provider_seconds": 70.44629241805524,
+      "geometry_seconds": 1.7221516333520412,
+      "peak_allocated_mib": 11060.69287109375,
+      "peak_reserved_mib": 12122.0,
+      "pose_conditioned_frames": 70,
+      "degenerate_pose_alignment_fallback_frame_ids": [14, 58, 71, 72],
+      "depth_mae_meters": 11.716419995499267,
+      "depth_rmse_meters": 32.588694420300335,
+      "depth_abs_rel": 0.32242365985874405,
+      "depth_delta_1_25": 0.786772252509241,
+      "ray_geometry_mae_meters": 14.143575887442607,
+      "confidence_error_pearson": -0.2307840933042841,
+      "test_fit_scale_only_factor": 0.9926444823332109,
+      "exit_code": 0
+    }
+  },
+  "not_run_but_configured": [
+    "confidence_p25",
+    "scale_midpoint",
+    "window_5",
+    "process_resolution_672",
+    "mapping_radius_0_5x",
+    "carving_tolerance_20"
+  ],
+  "accepted_execution_exit_codes": {
+    "main": [0, 0, 0, 0],
+    "selected_ablations": [0, 0, 0, 0, 0, 0, 0, 0],
+    "extended_runs": [0]
+  }
+}

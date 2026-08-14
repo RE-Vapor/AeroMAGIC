@@ -9,8 +9,14 @@ from ..utility.planning_depth import (
     apply_planning_validation_limits,
     compute_planning_coverage,
     create_scene_depth_providers,
+    path_is_blocked,
     process_planning_depth_frame,
+    set_planning_seeds,
     update_proxy_state,
+)
+from ..utility.experiment_metrics import (
+    create_trajectory_metrics_recorder,
+    write_online_metrics,
 )
 import json
 import time
@@ -379,7 +385,7 @@ def setup_test_scene(params,
 def compute_trajectory(params, macarons, camera, gt_scene, surface_scene,
                            proxy_scene, covered_scene, mesh, intersector, device, settings,
                            depth_provider, test_resolution=0.05,
-                           compute_collision=False):
+                           compute_collision=False, metrics_recorder=None):
 
     macarons.eval()
     curriculum_distances = get_curriculum_sampling_distances(params, surface_scene, proxy_scene)
@@ -394,8 +400,12 @@ def compute_trajectory(params, macarons, camera, gt_scene, surface_scene,
             depth_provider=depth_provider,
             proxy_scene=proxy_scene,
             device=device,
-            gathering_factor=params.gathering_factor,
+            gathering_factor=(
+                params.gathering_factor
+                * getattr(params, "planning_gathering_factor_multiplier", 1.0)
+            ),
             sensor_range=params.sensor_range,
+            metrics_recorder=metrics_recorder,
         )
             
     pose_i = 0
@@ -438,10 +448,17 @@ def compute_trajectory(params, macarons, camera, gt_scene, surface_scene,
             gt_scene=gt_scene,
             covered_scene=covered_scene,
             surface_epsilon=2 * test_resolution * params.scene_scale_factor,
+            normalization=(
+                settings.scene.visibility_ratio
+                if getattr(params, "planning_normalize_coverage_by_visibility", False)
+                else 1.0
+            ),
         )
         if pose_i % 10 == 0:
             print("current coverage:", current_coverage)
         coverage_evolution.append(current_cov)
+        if metrics_recorder is not None:
+            metrics_recorder.record_coverage(current_coverage, current_cov)
 
         if pose_i >= params.n_poses_in_trajectory:
             break
@@ -470,7 +487,16 @@ def compute_trajectory(params, macarons, camera, gt_scene, surface_scene,
 
             start_point = camera.X_cam_history[-1].cpu().numpy()
             end_point = X_neighbor[0].cpu().numpy()
-            if not line_segment_mesh_intersection(start_point, end_point, intersector):
+            if getattr(params, "planning_shared_collision_gate", False):
+                if path_is_blocked(
+                    start_point,
+                    end_point,
+                    intersector,
+                    compute_collision=compute_collision,
+                    intersection_fn=line_segment_mesh_intersection,
+                ):
+                    continue
+            elif not line_segment_mesh_intersection(start_point, end_point, intersector):
                 continue
 
             with torch.no_grad():
@@ -534,6 +560,7 @@ def run_test(params_name,
     params.total_batch_size = 1
 
     max_start_positions = apply_planning_validation_limits(params, depth_config)
+    set_planning_seeds(depth_config or {})
 
     if dataset_path is None:
         params.data_path = data_path
@@ -565,7 +592,8 @@ def run_test(params_name,
     #     dict_to_save = {}
 
     # LMDB database directory
-    lmdb_dir = os.path.join(results_dir, "macarons_lmdb")
+    lmdb_dir_name = getattr(depth_config, "scone_lmdb_dir_name", "macarons_lmdb")
+    lmdb_dir = os.path.join(results_dir, lmdb_dir_name)
     os.makedirs(lmdb_dir, exist_ok=True)
     print(f"\nLMDB database directory: {lmdb_dir}")
 
@@ -662,6 +690,15 @@ def run_test(params_name,
                                            mirrored_scene=mirrored_scene, mirrored_axis=mirrored_axis)
                 print(camera.X_cam_history[0], camera.V_cam_history[0])
 
+                metrics_recorder = create_trajectory_metrics_recorder(
+                    depth_config,
+                    planner="scone",
+                    scene=scene_name,
+                    start_index=start_cam_idx_i,
+                    capture_dir=training_frames_path,
+                    device=device,
+                )
+
                 coverage_evolution, X_cam_history, V_cam_history, full_pc, full_pc_colors, full_pc_idx = compute_trajectory(params, macarons,
                                                                                       camera,
                                                                                       gt_scene, surface_scene,
@@ -672,7 +709,20 @@ def run_test(params_name,
                                                                                       settings,
                                                                                       depth_provider=depth_provider,
                                                                                       test_resolution=test_resolution,
-                                                                                      compute_collision=compute_collision)
+                                                                                      compute_collision=compute_collision,
+                                                                                      metrics_recorder=metrics_recorder)
+
+                experiment_metrics = None
+                experiment_metrics_path = None
+                if metrics_recorder is not None:
+                    experiment_metrics = metrics_recorder.finalize(
+                        X_cam_history=X_cam_history,
+                        V_cam_history=V_cam_history,
+                        final_point_count=len(full_pc),
+                    )
+                    experiment_metrics_path = write_online_metrics(
+                        depth_config, experiment_metrics
+                    )
                 
 
                 # plot_scene_and_tragectory_and_constructed_pt(scene_name=scene_name, params=params, gt_scene=gt_scene,
@@ -710,6 +760,8 @@ def run_test(params_name,
                     'X_cam_history': X_cam_history.cpu().numpy(),
                     'V_cam_history': V_cam_history.cpu().numpy(),
                     'points': full_pc.cpu().numpy(),
+                    'experiment_metrics': experiment_metrics,
+                    'experiment_metrics_path': experiment_metrics_path,
                 }
                 save_to_lmdb(lmdb_env, lmdb_key, trajectory_data)
 
@@ -727,7 +779,10 @@ def run_test(params_name,
                 print(f"Closed LMDB database for {scene_name}/{start_cam_idx_i}\n")
 
                 # Cleanup: Keep only imgs folder, delete frames/depths/occupancy folders
-                cleanup_trajectory_folders(training_frames_path, keep_folders=['imgs'])
+                if not getattr(depth_config, "experiment_keep_frames", False):
+                    cleanup_trajectory_folders(training_frames_path, keep_folders=['imgs'])
+                else:
+                    print("Keeping captured frames for offline-only diagnostics.")
                 print(f"Finished processing trajectory {start_cam_idx_i}\n")
 
 
