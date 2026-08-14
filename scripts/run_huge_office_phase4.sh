@@ -4,6 +4,7 @@ set -o pipefail
 
 mode=${1:-}
 project_root=/home/ubuntu/Projects/MAGICIAN_MYL18
+regression=false
 case "$mode" in
   da3)
     config=test_huge_1_office_phase4_da3_3dgs.json
@@ -13,8 +14,13 @@ case "$mode" in
     config=test_huge_1_office_phase4_perfect_3dgs.json
     run_id=myl18_huge_1_office_perfect_3dgs
     ;;
+  perfect-regression)
+    config=test_huge_1_office_phase4_perfect_3dgs_async_regression.json
+    run_id=myl18_huge_1_office_perfect_3dgs_async_regression
+    regression=true
+    ;;
   *)
-    echo "usage: $0 {da3|perfect}" >&2
+    echo "usage: $0 {da3|perfect|perfect-regression}" >&2
     exit 2
     ;;
 esac
@@ -32,6 +38,7 @@ export PYTHONPATH=/home/ubuntu/Projects/MAGICIAN_MVE/.venv-myl12-source/Depth-An
 export HF_HOME=/home/ubuntu/Projects/MAGICIAN_MVE/.venv-myl12-hf
 export CUDA_HOME=/usr/local/cuda-12.1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+unset CUDA_LAUNCH_BLOCKING
 
 {
   date --iso-8601=seconds
@@ -46,6 +53,10 @@ python3 -u test_magician_planning.py -c "$config" 2>&1 | tee "$log_path"
 run_status=${PIPESTATUS[0]}
 
 if [ "$run_status" -eq 0 ]; then
+  if [ "$regression" = true ]; then
+    echo "completed exit_code=0 nonblocking=true finished_at=$(date --iso-8601=seconds)" > "$status_path"
+    exit 0
+  fi
   python3 scripts/plot_huge_office_start3.py \
     --lmdb "$lmdb_path" \
     --output "$result_root/start3_trajectory.png" \

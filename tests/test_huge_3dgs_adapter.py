@@ -1,8 +1,13 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from macarons.utility.huge_3dgs_adapter import Huge3DGSConfig
+from macarons.utility.huge_3dgs_adapter import (
+    Huge3DGSConfig,
+    capture_planning_observation,
+)
 
 
 class Huge3DGSConfigTest(unittest.TestCase):
@@ -46,6 +51,39 @@ class Huge3DGSConfigTest(unittest.TestCase):
                         "huge_3dgs_alpha_threshold": 1.1,
                     }
                 )
+
+
+class CapturePlanningObservationTest(unittest.TestCase):
+    def test_synchronizes_planner_gpu_before_cross_device_rgb_render(self):
+        events = []
+
+        def rasterize(mesh, *, cameras):
+            events.append("mesh_rasterize")
+            return SimpleNamespace(zbuf="depth")
+
+        camera = SimpleNamespace(
+            device="cuda:2",
+            fov_camera=object(),
+            renderer=SimpleNamespace(rasterizer=rasterize),
+        )
+
+        def render(current_camera):
+            events.append("rgb_render")
+            raise RuntimeError("stop after render boundary")
+
+        provider = SimpleNamespace(render=render)
+
+        with patch(
+            "torch.cuda.synchronize",
+            side_effect=lambda device: events.append(f"synchronize:{device}"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "stop after render boundary"):
+                capture_planning_observation(camera, object(), provider)
+
+        self.assertEqual(
+            events,
+            ["mesh_rasterize", "synchronize:cuda:2", "rgb_render"],
+        )
 
 
 if __name__ == "__main__":

@@ -286,6 +286,11 @@ def capture_planning_observation(
     with torch.no_grad():
         fragments = camera.renderer.rasterizer(mesh, cameras=camera.fov_camera)
         depth = fragments.zbuf
+        # PyTorch3D's mesh rasterizer launches asynchronously.  Synchronize the
+        # planner GPU before entering the RGB provider on another CUDA device;
+        # otherwise repeated captures can surface a stale illegal-access error
+        # at an unrelated empty_cache()/device-copy call in the provider.
+        torch.cuda.synchronize(camera.device)
     rendered = rgb_provider.render(camera)
     frame_id = camera.n_frames_captured
     frame_path = Path(camera.save_dir_path) / f"{frame_id}.pt"
