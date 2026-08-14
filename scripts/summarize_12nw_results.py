@@ -77,6 +77,16 @@ def main() -> None:
                     else None
                 ),
                 "cache_hits": sum(bool(frame.get("cache_hit")) for frame in frames),
+                "pose_conditioned_frames": sum(
+                    frame.get("source") == "DA3"
+                    and frame.get("pose_conditioned") is True
+                    for frame in frames
+                ),
+                "unconditioned_frames": sum(
+                    frame.get("source") == "DA3"
+                    and frame.get("pose_conditioned") is not True
+                    for frame in frames
+                ),
                 "pose_conditioning_fallbacks": [
                     {
                         "frame_id": frame.get("frame_id"),
@@ -170,6 +180,12 @@ def main() -> None:
             "peak_allocated_mib": _distribution(
                 [row["peak_allocated_mib"] for row in run_rows]
             ),
+            "pose_conditioned_frame_count": sum(
+                row["pose_conditioned_frames"] for row in run_rows
+            ),
+            "unconditioned_frame_count": sum(
+                row["unconditioned_frames"] for row in run_rows
+            ),
             "pose_conditioning_fallback_count": sum(
                 len(row["pose_conditioning_fallbacks"]) for row in run_rows
             ),
@@ -180,20 +196,23 @@ def main() -> None:
         for run_id, aggregate in aggregates.items()
         if run_id.startswith("main_")
     }
+    expected_main_run_ids = {
+        "main_scone_gt",
+        "main_scone_da3",
+        "main_magician_gt",
+        "main_magician_da3",
+    }
+    complete_main_matrix = set(main_groups) == expected_main_run_ids
     fairness_checks = {
         "main_run_ids": sorted(main_groups),
-        "expected_main_run_ids_present": set(main_groups)
-        == {
-            "main_scone_gt",
-            "main_scone_da3",
-            "main_magician_gt",
-            "main_magician_da3",
-        },
-        "each_main_run_has_starts_0_through_4": all(
+        "expected_main_run_ids_present": complete_main_matrix,
+        "each_main_run_has_starts_0_through_4": complete_main_matrix
+        and all(
             aggregate["start_indices"] == [0, 1, 2, 3, 4]
             for aggregate in main_groups.values()
         ),
-        "each_main_run_has_101_observations": all(
+        "each_main_run_has_101_observations": complete_main_matrix
+        and all(
             aggregate["observations"] == [101]
             for aggregate in main_groups.values()
         ),
