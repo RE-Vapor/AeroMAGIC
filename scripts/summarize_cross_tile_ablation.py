@@ -156,6 +156,32 @@ def _score_bias_evidence(metrics: Mapping[str, Any]) -> Mapping[str, Any]:
     }
 
 
+def _bootstrap_evidence(metrics: Mapping[str, Any]) -> Mapping[str, Any]:
+    params = json.loads(
+        (ROOT / "configs/macarons/macarons_default_training_config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    sensor_range = float(params["_camera_management"]["sensor_range"])
+    frame_zero = metrics["frames"][0]
+    planning_zero = metrics["cross_tile"]["planning"][0]
+    first_step = planning_zero["beam_steps"][0]
+    gains = [float(candidate["coverage_gain"]) for candidate in first_step["candidates"]]
+    depth_min = frame_zero["depth_scene_units"]["min"]
+    return {
+        "sensor_range_scene_units": sensor_range,
+        "frame_0_depth_min_scene_units": depth_min,
+        "frame_0_depth_min_exceeds_sensor_range": (
+            depth_min is not None and depth_min > sensor_range
+        ),
+        "frame_0_partial_point_count": frame_zero["partial_point_count"],
+        "frame_0_imagined_gaussians": planning_zero["imagined_gaussians"],
+        "frame_0_candidate_gain_min": min(gains) if gains else None,
+        "frame_0_candidate_gain_max": max(gains) if gains else None,
+        "frame_0_selected_pose_index": planning_zero["selected"]["pose_index"],
+    }
+
+
 def _conclusion(
     s_metrics: Mapping[str, Any],
     t_metrics: Mapping[str, Any],
@@ -187,6 +213,22 @@ def _conclusion(
         return "The seam candidate was collision-rejected while T worked: collision-gate false positive."
     if s_summary["first_crossing_frame"] is not None and not t_effective:
         return "S crossed but T rendering/coverage failed: tile-2 data, rendering, or evaluation contract error."
+    s_bootstrap = _bootstrap_evidence(s_metrics)
+    t_bootstrap = _bootstrap_evidence(t_metrics)
+    if (
+        s_bootstrap["frame_0_depth_min_exceeds_sensor_range"]
+        and t_bootstrap["frame_0_depth_min_exceeds_sensor_range"]
+        and s_bootstrap["frame_0_partial_point_count"] == 0
+        and t_bootstrap["frame_0_partial_point_count"] == 0
+    ):
+        return (
+            "Neither S nor T sustained tile-2 exploration. Both static renders and "
+            "collision gates passed, but their nearest frame-0 depth exceeded the "
+            "70 m mapping sensor range, producing zero partial points and zero imagined "
+            "Gaussians; all first-step gains tied at zero and deterministic ordering "
+            "moved toward x-. This is a start-pose/sensor-range configuration contract "
+            "failure, not evidence that tile-2 assets are unusable."
+        )
     return "Neither S nor T met sustained exploration gates: inspect scene coordinates/assets before planner tuning."
 
 
@@ -253,7 +295,11 @@ def _render_run_preview(
     axis = figure.add_subplot(grid[1, 2])
     valid = [(i, value) for i, value in enumerate(score_delta) if value is not None]
     if valid:
-        axis.plot([item[0] for item in valid], [item[1] for item in valid])
+        axis.plot(
+            [item[0] for item in valid],
+            [item[1] for item in valid],
+            marker="o",
+        )
     axis.axhline(0, color="black", linewidth=0.8)
     axis.set(title="Best tile2 − tile1 beam score", xlabel="planning frame")
 
@@ -366,6 +412,7 @@ def main() -> None:
                 "accepted": all(s_checks.values()),
                 "trajectory": s_metrics["cross_tile"]["trajectory_summary"],
                 "score_bias_evidence": _score_bias_evidence(s_metrics),
+                "bootstrap_evidence": _bootstrap_evidence(s_metrics),
                 "crossing_window": _crossing_window(s_metrics),
             },
             "T": {
@@ -373,6 +420,7 @@ def main() -> None:
                 "accepted": all(t_checks.values()),
                 "trajectory": t_metrics["cross_tile"]["trajectory_summary"],
                 "score_bias_evidence": _score_bias_evidence(t_metrics),
+                "bootstrap_evidence": _bootstrap_evidence(t_metrics),
                 "crossing_window": _crossing_window(t_metrics),
             },
             "MYL-40": summarize_cross_tile_trajectory(
