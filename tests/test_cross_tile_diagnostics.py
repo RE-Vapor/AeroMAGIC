@@ -1,0 +1,85 @@
+import unittest
+
+import numpy as np
+
+from macarons.utility.cross_tile_diagnostics import (
+    audit_neighbor_generation,
+    compute_partitioned_scene_coverage,
+    summarize_cross_tile_trajectory,
+)
+
+
+class CrossTileDiagnosticsTests(unittest.TestCase):
+    def test_neighbor_audit_preserves_crossing_and_boundary_reasons(self):
+        audit = audit_neighbor_generation([11, 0, 5, 0, 0], [24, 11, 13, 5, 10])
+        crossing = [
+            item for item in audit["attempts"] if item["pose_index"] == [12, 0, 5, 0, 0]
+        ]
+        self.assertEqual(len(crossing), 1)
+        self.assertIsNone(crossing[0]["rejection_reason"])
+        self.assertEqual(audit["attempted_count"], 10)
+        self.assertEqual(audit["boundary_rejected_count"], 2)
+
+    def test_partitioned_coverage_recombines_into_global_reference(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch is unavailable")
+
+        class Cell:
+            def __init__(self, points):
+                self.cell_pts = torch.tensor(points, dtype=torch.float32)
+
+        class Scene:
+            def __init__(self, cells):
+                self.cells = {key: Cell(value) for key, value in cells.items()}
+
+        gt = Scene({"a": [[74.0, 0, 0], [76.0, 0, 0]], "b": [[80.0, 0, 0]]})
+        recovered = Scene({"a": [[74.1, 0, 0]], "b": [[80.1, 0, 0]]})
+        result = compute_partitioned_scene_coverage(
+            gt,
+            recovered,
+            seam_x=75.0,
+            surface_epsilon=0.2,
+            normalization=0.5,
+            reconstruction_points=[[74.1, 0, 0], [80.1, 0, 0]],
+        )
+        self.assertEqual(result["tile_1"]["covered_points"], 1)
+        self.assertEqual(result["tile_2"]["covered_points"], 1)
+        self.assertEqual(result["tile_2"]["reference_points"], 2)
+        self.assertAlmostEqual(result["combined"]["raw"], 2 / 3)
+        self.assertAlmostEqual(result["combined"]["normalized"], 4 / 3)
+
+    def test_trajectory_summary_requires_sustained_tile_two_activity(self):
+        positions = np.asarray(
+            [[73.0, 0, 0], [86.0, 0, 0], [86.0, 0, 0], [73.0, 0, 0]]
+        )
+        indices = np.asarray(
+            [[11, 9, 5, 1, 3], [12, 9, 5, 1, 3], [12, 9, 5, 1, 4], [11, 9, 5, 1, 4]]
+        )
+        coverage = [
+            {
+                "tile_2": {
+                    "raw": value,
+                    "normalized": value,
+                    "reconstruction_points": count,
+                }
+            }
+            for value, count in ((0.0, 0), (0.01, 10), (0.04, 15), (0.04, 15))
+        ]
+        summary = summarize_cross_tile_trajectory(
+            positions, indices, seam_x=75.0, tile_coverage=coverage
+        )
+        self.assertEqual(summary["first_crossing_frame"], 1)
+        self.assertEqual(summary["tile_2_observations"], 2)
+        self.assertEqual(summary["tile_2_longest_consecutive_stay"], 2)
+        self.assertEqual(summary["returns_to_tile_1"], 1)
+        self.assertEqual(summary["actions"]["positive_x"], 1)
+        self.assertEqual(summary["actions"]["negative_x"], 1)
+        self.assertEqual(summary["actions"]["in_place_rotation"], 1)
+        self.assertEqual(summary["tile_2_longest_nonempty_reconstruction_run"], 3)
+        self.assertAlmostEqual(summary["tile_2_raw_coverage_delta"], 0.04)
+
+
+if __name__ == "__main__":
+    unittest.main()

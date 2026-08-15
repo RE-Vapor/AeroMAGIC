@@ -16,6 +16,11 @@ from typing import Any, Mapping, Optional
 
 import numpy as np
 
+from .cross_tile_diagnostics import (
+    compute_partitioned_scene_coverage,
+    summarize_cross_tile_trajectory,
+)
+
 
 def _as_numpy(value: Any) -> np.ndarray:
     if value is None:
@@ -89,6 +94,32 @@ class TrajectoryMetricsRecorder:
         )
         self.frames = []
         self.coverage = []
+        cross_tile_enabled = _config_value(
+            config, "experiment_cross_tile_diagnostics_enabled", False
+        )
+        if type(cross_tile_enabled) is not bool:
+            raise ValueError(
+                "experiment_cross_tile_diagnostics_enabled must be a boolean."
+            )
+        self.cross_tile_enabled = cross_tile_enabled
+        self.cross_tile_seam_x = float(
+            _config_value(config, "experiment_cross_tile_seam_x", 75.0)
+        )
+        self.cross_tile_min_x_index = int(
+            _config_value(config, "experiment_cross_tile_min_x_index", 12)
+        )
+        self.cross_tile_gate_from_index = list(
+            _config_value(
+                config, "experiment_cross_tile_gate_from_index", [11, 9, 5, 1, 3]
+            )
+        )
+        self.cross_tile_gate_to_index = list(
+            _config_value(
+                config, "experiment_cross_tile_gate_to_index", [12, 9, 5, 1, 3]
+            )
+        )
+        self.cross_tile_coverage = []
+        self.planning_diagnostics = []
         self.started_at = time.perf_counter()
         self._reset_cuda_peak()
 
@@ -172,12 +203,68 @@ class TrajectoryMetricsRecorder:
             }
         )
 
+    def record_cross_tile_coverage(
+        self,
+        *,
+        gt_scene: Any,
+        covered_scene: Any,
+        reconstruction_points: Any,
+        surface_epsilon: float,
+        normalization: float,
+        global_raw: Any,
+        global_normalized: float,
+    ) -> None:
+        if not self.cross_tile_enabled:
+            return
+        frame = dict(
+            compute_partitioned_scene_coverage(
+                gt_scene,
+                covered_scene,
+                seam_x=self.cross_tile_seam_x,
+                surface_epsilon=surface_epsilon,
+                normalization=normalization,
+                reconstruction_points=reconstruction_points,
+            )
+        )
+        frame["frame_id"] = len(self.cross_tile_coverage)
+        frame["global_raw"] = _scalar(global_raw)
+        frame["global_normalized"] = float(global_normalized)
+        frame["combined_raw_error"] = float(
+            frame["combined"]["raw"] - frame["global_raw"]
+        )
+        frame["combined_normalized_error"] = float(
+            frame["combined"]["normalized"] - frame["global_normalized"]
+        )
+        if self.cross_tile_coverage:
+            previous = self.cross_tile_coverage[-1]
+            for tile in ("tile_1", "tile_2"):
+                frame[tile]["new_covered_points"] = (
+                    frame[tile]["covered_points"]
+                    - previous[tile]["covered_points"]
+                )
+                frame[tile]["new_reconstruction_points"] = (
+                    frame[tile]["reconstruction_points"]
+                    - previous[tile]["reconstruction_points"]
+                )
+        else:
+            for tile in ("tile_1", "tile_2"):
+                frame[tile]["new_covered_points"] = frame[tile]["covered_points"]
+                frame[tile]["new_reconstruction_points"] = frame[tile][
+                    "reconstruction_points"
+                ]
+        self.cross_tile_coverage.append(frame)
+
+    def record_planning_diagnostic(self, diagnostic: Mapping[str, Any]) -> None:
+        if self.cross_tile_enabled:
+            self.planning_diagnostics.append(dict(diagnostic))
+
     def finalize(
         self,
         *,
         X_cam_history: Any,
         V_cam_history: Any,
         final_point_count: int,
+        pose_index_history: Any = None,
     ) -> Mapping[str, Any]:
         self.synchronize()
         positions = _as_numpy(X_cam_history).astype(np.float64, copy=False).reshape(-1, 3)
@@ -198,7 +285,7 @@ class TrajectoryMetricsRecorder:
                     torch.cuda.max_memory_reserved(self.device) / (1024.0**2)
                 ),
             }
-        return {
+        metrics = {
             "schema_version": self.schema_version,
             "online_only": True,
             "renderer_gt_read": False,
@@ -225,6 +312,24 @@ class TrajectoryMetricsRecorder:
             },
             "cuda": cuda_metrics,
         }
+        if self.cross_tile_enabled:
+            pose_indices = [] if pose_index_history is None else pose_index_history
+            metrics["cross_tile"] = {
+                "schema_version": 1,
+                "seam_x": self.cross_tile_seam_x,
+                "tile_1_definition": "x <= seam_x",
+                "tile_2_definition": "x > seam_x",
+                "tile_2_min_x_index": self.cross_tile_min_x_index,
+                "coverage": self.cross_tile_coverage,
+                "planning": self.planning_diagnostics,
+                "trajectory_summary": summarize_cross_tile_trajectory(
+                    positions,
+                    pose_indices,
+                    seam_x=self.cross_tile_seam_x,
+                    tile_coverage=self.cross_tile_coverage,
+                ),
+            }
+        return metrics
 
 
 def _config_value(config: Any, name: str, default: Any) -> Any:
