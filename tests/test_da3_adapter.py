@@ -13,6 +13,7 @@ from macarons.utility.da3_adapter import (
     DA3_SOURCE_REVISION,
     DA3DepthProvider,
     _MODEL_INSTANCES,
+    _has_translation_baseline,
     camera_intrinsics,
     pytorch3d_to_opencv_extrinsics,
 )
@@ -103,6 +104,23 @@ def _frame(index, *, include_gt=False):
 
 
 class DA3CoordinateTests(unittest.TestCase):
+    def test_submillimeter_rotation_only_jitter_is_not_a_translation_baseline(self):
+        extrinsics = np.repeat(np.eye(4, dtype=np.float32)[None], 3, axis=0)
+        centers = np.array(
+            [
+                [-73.333336, 35.0, 6.6666718],
+                [-73.333336, 35.000004, 6.6666713],
+                [-73.333336, 35.000004, 6.6666727],
+            ],
+            dtype=np.float32,
+        )
+        extrinsics[:, :3, 3] = -centers
+        self.assertFalse(_has_translation_baseline(extrinsics))
+
+        extrinsics[1, :3, 3] = -np.array([-72.0, 35.0, 6.0])
+        extrinsics[2, :3, 3] = -np.array([-73.0, 36.0, 6.0])
+        self.assertTrue(_has_translation_baseline(extrinsics))
+
     def test_dependency_and_model_revisions_are_immutable_and_in_sync(self):
         environment = (REPO_ROOT / "environment.yml").read_text(encoding="utf-8")
         config = json.loads(

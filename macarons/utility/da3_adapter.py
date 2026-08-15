@@ -20,7 +20,7 @@ import numpy as np
 from .depth_sources import DepthFrame, DepthObservation, DepthProvider
 
 
-DA3_ADAPTER_VERSION = "2"
+DA3_ADAPTER_VERSION = "3"
 DA3_SOURCE_REVISION = "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4"
 DA3_DEFAULT_MODEL = "depth-anything/DA3NESTED-GIANT-LARGE"
 DA3_DEFAULT_MODEL_REVISION = "8615eefb62f2db4f8d6ebaa59160086981672829"
@@ -213,7 +213,7 @@ def _cache_key(metadata: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(metadata).encode("utf-8")).hexdigest()
 
 
-def _has_translation_baseline(extrinsics: np.ndarray, epsilon: float = 1e-6) -> bool:
+def _has_translation_baseline(extrinsics: np.ndarray, epsilon: float = 1e-4) -> bool:
     """Whether DA3's 3D Umeyama alignment has sufficient camera-center rank."""
 
     if len(extrinsics) < 3:
@@ -221,6 +221,8 @@ def _has_translation_baseline(extrinsics: np.ndarray, epsilon: float = 1e-6) -> 
     camera_to_world = np.linalg.inv(extrinsics)
     centers = camera_to_world[:, :3, 3]
     centered = centers - np.mean(centers, axis=0, keepdims=True)
+    if np.max(np.linalg.norm(centers - centers[0], axis=1)) <= epsilon:
+        return False
     return bool(np.linalg.matrix_rank(centered, tol=epsilon) >= 2)
 
 

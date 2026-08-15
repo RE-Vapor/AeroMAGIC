@@ -11,8 +11,14 @@ from ..utility.planning_depth import (
     create_scene_depth_providers,
     path_is_blocked,
     process_planning_depth_frame,
+    scene_texture_atlas_size,
     set_planning_seeds,
     update_proxy_state,
+    validation_uses_occupied_pose,
+)
+from ..utility.scene_transform import (
+    resolve_scene_mesh_transform,
+    transform_scene_vertices,
 )
 from ..utility.experiment_metrics import (
     create_trajectory_metrics_recorder,
@@ -231,7 +237,7 @@ def setup_test_camera(params,
 
     return camera
 
-def setup_test(params, model_path, device, verbose=True):
+def setup_test(params, model_path, device, verbose=True, use_occupied_pose=True):
     # Create dataloader
     _, _, test_dataloader = get_dataloader(train_scenes=params.train_scenes,
                                            val_scenes=params.val_scenes,
@@ -239,7 +245,8 @@ def setup_test(params, model_path, device, verbose=True):
                                            batch_size=1,
                                            ddp=False, jz=False,
                                            world_size=None, ddp_rank=None,
-                                           data_path=params.data_path)
+                                           data_path=params.data_path,
+                                           use_occupied_pose=use_occupied_pose)
     print("\nThe following scenes will be used to test the model:")
     for batch, elem in enumerate(test_dataloader):
         print(elem['scene_name'][0])
@@ -406,6 +413,15 @@ def compute_trajectory(params, macarons, camera, gt_scene, surface_scene,
             ),
             sensor_range=params.sensor_range,
             metrics_recorder=metrics_recorder,
+            enforce_sensor_range_gate=(
+                pose_i == 0 and getattr(params, "planning_range_gate_enabled", False)
+            ),
+            sensor_range_gate_quantile=getattr(
+                params, "planning_range_gate_quantile", 0.9
+            ),
+            sensor_range_gate_min_points=getattr(
+                params, "planning_range_gate_min_points", 1
+            ),
         )
             
     pose_i = 0
@@ -582,7 +598,12 @@ def run_test(params_name,
     )
 
     # Setup model and dataloader
-    dataloader, macarons, memory = setup_test(params, weights_path, device)
+    dataloader, macarons, memory = setup_test(
+        params,
+        weights_path,
+        device,
+        use_occupied_pose=validation_uses_occupied_pose(depth_config),
+    )
 
     # # Result json
     # if load_json:
@@ -609,7 +630,7 @@ def run_test(params_name,
         scene_names = [scene_dict['scene_name']]
         obj_names = [scene_dict['obj_name']]
         all_settings = [scene_dict['settings']]
-        occupied_pose_datas = [scene_dict['occupied_pose']]
+        occupied_pose_datas = [scene_dict.get('occupied_pose')]
 
         batch_size = len(scene_names)
 
@@ -633,16 +654,23 @@ def run_test(params_name,
 
             mirrored_scene = False
             mirrored_axis = None
+            mesh_transform = resolve_scene_mesh_transform(depth_config, scene_name)
 
             # Load mesh
             mesh = load_scene(mesh_path, params.scene_scale_factor, device,
-                              mirror=mirrored_scene, mirrored_axis=mirrored_axis)
+                              mirror=mirrored_scene, mirrored_axis=mirrored_axis,
+                              texture_atlas_size=scene_texture_atlas_size(depth_config),
+                              mesh_transform=mesh_transform)
             import trimesh
             mesh_for_check = trimesh.load(mesh_path)
 
             if isinstance(mesh_for_check, trimesh.Scene):
                 mesh_for_check = mesh_for_check.dump(concatenate=True)
-            mesh_for_check.vertices *= params.scene_scale_factor
+            mesh_for_check.vertices = transform_scene_vertices(
+                mesh_for_check.vertices,
+                mesh_transform,
+                scene_scale_factor=params.scene_scale_factor,
+            )
 
             intersector = mesh_for_check.ray
 

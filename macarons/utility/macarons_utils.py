@@ -41,6 +41,10 @@ from .utils import (
 from .spherical_harmonics import get_spherical_harmonics, clear_spherical_harmonics_cache
 from .CustomGeometry import *
 from .CustomDataset import SceneDataset
+from .scene_transform import (
+    IDENTITY_SCENE_MESH_TRANSFORM,
+    transform_scene_vertices,
+)
 
 from ..networks.ManyDepth import (
     FeatureExtractor,
@@ -451,15 +455,22 @@ def count_map_kd(mesh_path):
     return len(textures)
 
 
-def load_scene(mesh_path, scene_scale_factor, device, 
+def load_scene(mesh_path, scene_scale_factor, device,
                mirror=False, mirrored_axis=None,
-               texture_wrap="repeat", texture_atlas_size=32):
+               texture_wrap="repeat", texture_atlas_size=32,
+               mesh_transform=None):
+    mesh_transform = mesh_transform or IDENTITY_SCENE_MESH_TRANSFORM
     
     num_tex = count_map_kd(mesh_path)
     
     if num_tex <= 1:
         mesh = load_objs_as_meshes([mesh_path], device=device)
-        mesh.verts_list()[0] *= scene_scale_factor
+        transformed = transform_scene_vertices(
+            mesh.verts_list()[0],
+            mesh_transform,
+            scene_scale_factor=scene_scale_factor,
+        )
+        mesh.verts_list()[0].copy_(transformed)
         
         if mirror:
             for axis in mirrored_axis:
@@ -474,13 +485,16 @@ def load_scene(mesh_path, scene_scale_factor, device,
         texture_wrap=texture_wrap,
     )
     
-    verts = verts * scene_scale_factor
+    verts = transform_scene_vertices(
+        verts,
+        mesh_transform,
+        scene_scale_factor=scene_scale_factor,
+    )
     
     if mirror:
         for axis in mirrored_axis:
             verts[..., axis] = -verts[..., axis]
-    torch.tensor()
-    
+
     return Meshes(
         verts=[verts],
         faces=[faces.verts_idx],

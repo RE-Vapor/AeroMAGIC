@@ -12,13 +12,20 @@ from ..utility.planning_depth import (
     create_scene_depth_providers,
     path_is_blocked,
     process_planning_depth_frame,
+    scene_texture_atlas_size,
     set_planning_seeds,
     update_proxy_state,
+    validation_uses_occupied_pose,
+)
+from ..utility.scene_transform import (
+    resolve_scene_mesh_transform,
+    transform_scene_vertices,
 )
 from ..utility.experiment_metrics import (
     create_trajectory_metrics_recorder,
     write_online_metrics,
 )
+from ..utility.cross_tile_diagnostics import audit_neighbor_generation
 import trimesh
 import lmdb
 
@@ -188,7 +195,7 @@ results_dir = os.path.join(dir_path, "../../results/scene_exploration")
 weights_dir = os.path.join(dir_path, "../../weights/macarons")
 configs_dir = os.path.join(dir_path, "../../configs/macarons")
 
-def setup_test(params, model_path, device, verbose=True):
+def setup_test(params, model_path, device, verbose=True, use_occupied_pose=True):
     # Create dataloader
     _, _, test_dataloader = get_dataloader(train_scenes=params.train_scenes,
                                            val_scenes=params.val_scenes,
@@ -196,7 +203,8 @@ def setup_test(params, model_path, device, verbose=True):
                                            batch_size=1,
                                            ddp=False, jz=False,
                                            world_size=None, ddp_rank=None,
-                                           data_path=params.data_path)
+                                           data_path=params.data_path,
+                                           use_occupied_pose=use_occupied_pose)
     print("\nThe following scenes will be used to test the model:")
     for batch, elem in enumerate(test_dataloader):
         print(elem['scene_name'][0])
@@ -419,6 +427,15 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
             ),
             sensor_range=params.sensor_range,
             metrics_recorder=metrics_recorder,
+            enforce_sensor_range_gate=(
+                pose_i == 0 and getattr(params, "planning_range_gate_enabled", False)
+            ),
+            sensor_range_gate_quantile=getattr(
+                params, "planning_range_gate_quantile", 0.9
+            ),
+            sensor_range_gate_min_points=getattr(
+                params, "planning_range_gate_min_points", 1
+            ),
         )
             
 
@@ -468,6 +485,15 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
         coverage_evolution.append(current_cov)
         if metrics_recorder is not None:
             metrics_recorder.record_coverage(current_coverage, current_cov)
+            metrics_recorder.record_cross_tile_coverage(
+                gt_scene=gt_scene,
+                covered_scene=covered_scene,
+                reconstruction_points=full_pc,
+                surface_epsilon=2 * test_resolution * params.scene_scale_factor,
+                normalization=settings.scene.visibility_ratio,
+                global_raw=current_coverage,
+                global_normalized=current_cov,
+            )
 
         if pose_i >= params.n_poses_in_trajectory:
             break
@@ -542,6 +568,67 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
 
         print(f"historical: {novelty_values.sum().item()}/{n_points}")
 
+        cross_tile_enabled = bool(
+            metrics_recorder is not None and metrics_recorder.cross_tile_enabled
+        )
+        planning_diagnostic = None
+        if cross_tile_enabled:
+            seam_x = metrics_recorder.cross_tile_seam_x
+            tile_2_min_x_index = metrics_recorder.cross_tile_min_x_index
+            imagined_tile_2 = filtered_X_world[:, 0] > seam_x
+            novel_mask = novelty_values <= 0
+            current_pose_index = [int(value) for value in camera.cam_idx.cpu().tolist()]
+            seam_from_index = torch.tensor(
+                metrics_recorder.cross_tile_gate_from_index,
+                device=camera.device,
+                dtype=torch.long,
+            )
+            seam_to_index = torch.tensor(
+                metrics_recorder.cross_tile_gate_to_index,
+                device=camera.device,
+                dtype=torch.long,
+            )
+            seam_from_pose, _ = camera.get_pose_from_idx(seam_from_index)
+            seam_to_pose, _ = camera.get_pose_from_idx(seam_to_index)
+            seam_from_xyz = seam_from_pose[:3]
+            seam_to_xyz = seam_to_pose[:3]
+            planning_diagnostic = {
+                'frame_id': pose_i,
+                'current_pose_index': current_pose_index,
+                'current_xyz': [float(value) for value in camera.X_cam[0].cpu().tolist()],
+                'imagined_gaussians': {
+                    'tile_1': int((~imagined_tile_2).sum().item()),
+                    'tile_2': int(imagined_tile_2.sum().item()),
+                },
+                'novel_imagined_gaussians': {
+                    'tile_1': int((novel_mask & ~imagined_tile_2).sum().item()),
+                    'tile_2': int((novel_mask & imagined_tile_2).sum().item()),
+                },
+                'beam_steps': [],
+                'direct_crossing_candidate_generated': False,
+                'direct_crossing_candidate_legal': False,
+                'seam_segment_collision': {
+                    'from_pose_index': metrics_recorder.cross_tile_gate_from_index,
+                    'to_pose_index': metrics_recorder.cross_tile_gate_to_index,
+                    'from_xyz': [
+                        float(value) for value in seam_from_xyz.cpu().tolist()
+                    ],
+                    'to_xyz': [float(value) for value in seam_to_xyz.cpu().tolist()],
+                    'gt_mesh': bool(
+                        line_segment_mesh_intersection(
+                            seam_from_xyz.cpu().numpy(),
+                            seam_to_xyz.cpu().numpy(),
+                            intersector,
+                        )
+                    ),
+                    'predicted_point_cloud': bool(
+                        line_segment_intersects_point_cloud_region(
+                            filtered_X_world, seam_from_xyz, seam_to_xyz
+                        )
+                    ),
+                },
+            }
+
         # 3. Beam Search 
         remaining_steps = params.n_poses_in_trajectory + 1 - history_length
         print(f"Beam search remain: {remaining_steps} steps")
@@ -562,11 +649,82 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
             print(f"Beam search step {bs_i + 1}/{params.beam_steps}")
 
             all_candidates = []
+            step_diagnostic = None
+            if cross_tile_enabled:
+                step_diagnostic = {
+                    'beam_step': bs_i,
+                    'attempted_candidate_count': 0,
+                    'generated_candidate_count': 0,
+                    'legal_candidate_count': 0,
+                    'generated_tile_2_candidate_count': 0,
+                    'legal_tile_2_candidate_count': 0,
+                    'rejections': [],
+                    'candidates': [],
+                }
 
             # extend to every beams
-            for beam in beams:
+            for beam_index, beam in enumerate(beams):
                 neighbor_indices = camera.get_neighboring_poses(pose_idx=beam['current_pose_idx'])
                 valid_neighbors = camera.get_valid_neighbors(neighbor_indices=neighbor_indices, mesh=mesh)
+
+                if cross_tile_enabled:
+                    parent_pose_index = [
+                        int(value) for value in beam['current_pose_idx'].cpu().tolist()
+                    ]
+                    generation = audit_neighbor_generation(
+                        parent_pose_index,
+                        (
+                            camera.pose_l,
+                            camera.pose_w,
+                            camera.pose_h,
+                            camera.pose_n_elev,
+                            camera.pose_n_azim,
+                        ),
+                    )
+                    step_diagnostic['attempted_candidate_count'] += generation[
+                        'attempted_count'
+                    ]
+                    for attempt in generation['attempts']:
+                        if attempt['rejection_reason'] == 'boundary':
+                            step_diagnostic['rejections'].append({
+                                'beam_parent': beam_index,
+                                **attempt,
+                            })
+                    generated_indices = [
+                        [int(value) for value in row.cpu().tolist()]
+                        for row in neighbor_indices
+                    ]
+                    step_diagnostic['generated_candidate_count'] += len(
+                        generated_indices
+                    )
+                    step_diagnostic['generated_tile_2_candidate_count'] += sum(
+                        row[0] >= tile_2_min_x_index for row in generated_indices
+                    )
+                    if (
+                        bs_i == 0
+                        and parent_pose_index[0] == tile_2_min_x_index - 1
+                        and any(
+                            row[0] == tile_2_min_x_index
+                            for row in generated_indices
+                        )
+                    ):
+                        planning_diagnostic[
+                            'direct_crossing_candidate_generated'
+                        ] = True
+                    has_unvisited = any(
+                        not camera.get_pose_from_idx(row)[1]
+                        for row in neighbor_indices
+                    )
+                    if has_unvisited:
+                        for row in neighbor_indices:
+                            if camera.get_pose_from_idx(row)[1]:
+                                step_diagnostic['rejections'].append({
+                                    'beam_parent': beam_index,
+                                    'pose_index': [
+                                        int(value) for value in row.cpu().tolist()
+                                    ],
+                                    'rejection_reason': 'visited',
+                                })
 
                 rendering_candidate = []
                 idx_candidate = []
@@ -580,6 +738,8 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                     X_neighbor, V_neighbor, fov_neighbor = camera.get_camera_parameters_from_pose(neighbor_pose)
                     target_loc = X_neighbor[0].cpu().numpy()
 
+                    collision_reason = None
+
                     if bs_i == 0 and getattr(params, "planning_shared_collision_gate", False):
                         if path_is_blocked(
                             current_loc,
@@ -588,23 +748,45 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                             compute_collision=compute_collision,
                             intersection_fn=line_segment_mesh_intersection,
                         ):
-                            continue
+                            collision_reason = 'gt_mesh_collision'
                     elif bs_i == 0:
                         if line_segment_mesh_intersection(current_loc, target_loc, intersector):
-                            continue
+                            collision_reason = 'gt_mesh_collision'
                     elif getattr(params, "planning_shared_collision_gate", False):
                         # we use occupancy points to check for future collisions.
                         if compute_collision and line_segment_intersects_point_cloud_region(
                             filtered_X_world, X_current[0], X_neighbor[0]
                         ):
-                            continue
+                            collision_reason = 'predicted_point_cloud_collision'
                     elif line_segment_intersects_point_cloud_region(
                         filtered_X_world, X_current[0], X_neighbor[0]
                     ):
+                        collision_reason = 'predicted_point_cloud_collision'
+
+                    if collision_reason is not None:
+                        if cross_tile_enabled:
+                            step_diagnostic['rejections'].append({
+                                'beam_parent': beam_index,
+                                'pose_index': [int(value) for value in row.cpu().tolist()],
+                                'xyz': [float(value) for value in X_neighbor[0].cpu().tolist()],
+                                'rejection_reason': collision_reason,
+                            })
                         continue
 
                     rendering_candidate.append(fov_neighbor)
                     idx_candidate.append(row)
+                    if cross_tile_enabled:
+                        row_list = [int(value) for value in row.cpu().tolist()]
+                        step_diagnostic['legal_candidate_count'] += 1
+                        step_diagnostic['legal_tile_2_candidate_count'] += int(
+                            row_list[0] >= tile_2_min_x_index
+                        )
+                        if (
+                            bs_i == 0
+                            and parent_pose_index[0] == tile_2_min_x_index - 1
+                            and row_list[0] == tile_2_min_x_index
+                        ):
+                            planning_diagnostic['direct_crossing_candidate_legal'] = True
 
                 if len(rendering_candidate) == 0:
                     continue
@@ -672,15 +854,69 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                             'novelty_values': new_novelty,
                             'coverage_gain': coverage_gain,  # single step
                             'total_coverage_gain': new_total_coverage_gain, 
-                            'current_pose_idx': pose_idx
+                            'current_pose_idx': pose_idx,
+                            '_diagnostic': ({
+                                'beam_parent': beam_index,
+                                'pose_index': [int(value) for value in pose_idx.cpu().tolist()],
+                                'xyz': [float(value) for value in fov_camera.get_camera_center()[0].cpu().tolist()],
+                                'tile': (
+                                    'tile_2'
+                                    if int(pose_idx[0].item()) >= tile_2_min_x_index
+                                    else 'tile_1'
+                                ),
+                                'coverage_gain': float(coverage_gain),
+                                'total_coverage_gain': float(new_total_coverage_gain),
+                                'trajectory': [
+                                    [int(value) for value in item.cpu().tolist()]
+                                    for item in beam['trajectory'] + [pose_idx]
+                                ],
+                            } if cross_tile_enabled else None),
                         })
 
             if len(all_candidates) == 0:
                 print("No valid candidates found!")
+                if cross_tile_enabled:
+                    planning_diagnostic['beam_steps'].append(step_diagnostic)
                 break
 
             # coverage gains based on rgb imgs
             all_candidates.sort(key=lambda x: x['total_coverage_gain'], reverse=True)
+            if cross_tile_enabled:
+                for rank, candidate in enumerate(all_candidates, start=1):
+                    candidate['_diagnostic']['rank'] = rank
+                    candidate['_diagnostic']['top_10'] = rank <= beam_width
+                    step_diagnostic['candidates'].append(candidate['_diagnostic'])
+                tile_1_candidates = [
+                    item['_diagnostic'] for item in all_candidates
+                    if item['_diagnostic']['tile'] == 'tile_1'
+                ]
+                tile_2_candidates = [
+                    item['_diagnostic'] for item in all_candidates
+                    if item['_diagnostic']['tile'] == 'tile_2'
+                ]
+                best_tile_1 = tile_1_candidates[0] if tile_1_candidates else None
+                best_tile_2 = tile_2_candidates[0] if tile_2_candidates else None
+                step_diagnostic['best_tile_1'] = best_tile_1
+                step_diagnostic['best_tile_2'] = best_tile_2
+                step_diagnostic['best_tile_2_minus_tile_1_coverage_gain'] = (
+                    best_tile_2['coverage_gain'] - best_tile_1['coverage_gain']
+                    if best_tile_1 is not None and best_tile_2 is not None
+                    else None
+                )
+                step_diagnostic['best_tile_2_minus_tile_1_total_coverage_gain'] = (
+                    best_tile_2['total_coverage_gain']
+                    - best_tile_1['total_coverage_gain']
+                    if best_tile_1 is not None and best_tile_2 is not None
+                    else None
+                )
+                step_diagnostic['top_10_trajectories_with_tile_2'] = sum(
+                    any(
+                        pose[0] >= tile_2_min_x_index
+                        for pose in candidate['_diagnostic']['trajectory']
+                    )
+                    for candidate in all_candidates[:beam_width]
+                )
+                planning_diagnostic['beam_steps'].append(step_diagnostic)
             beams = all_candidates[:beam_width]
             # print(f"Step {bs_i + 1}: Best total_coverage_gain = {beams[0]['total_coverage_gain']:.2f}, Score = {beams[0]['score']}/{n_points}, Current step gain = {beams[0].get('coverage_gain', 0):.2f}")
             print(f"Top {min(beam_width, len(all_candidates))} beams selected from {len(all_candidates)} candidates")
@@ -690,11 +926,51 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
             best_trajectory = best_beam['trajectory']
         else:
             print("No valid trajectory found!")
+            if cross_tile_enabled:
+                planning_diagnostic['selected'] = None
+                metrics_recorder.record_planning_diagnostic(planning_diagnostic)
             break
 
         # move one step
         next_idx = best_trajectory[0]
         print(f"move one step: pose_idx = {next_idx}")
+        if cross_tile_enabled:
+            selected_pose = [int(value) for value in next_idx.cpu().tolist()]
+            first_step = planning_diagnostic['beam_steps'][0]
+            rejection_reason_counts = {}
+            for rejection in first_step['rejections']:
+                reason = rejection['rejection_reason']
+                rejection_reason_counts[reason] = (
+                    rejection_reason_counts.get(reason, 0) + 1
+                )
+            planning_diagnostic['candidate_summary'] = {
+                'attempted_count': first_step['attempted_candidate_count'],
+                'generated_count': first_step['generated_candidate_count'],
+                'legal_count': first_step['legal_candidate_count'],
+                'generated_tile_2_count': first_step[
+                    'generated_tile_2_candidate_count'
+                ],
+                'legal_tile_2_count': first_step[
+                    'legal_tile_2_candidate_count'
+                ],
+                'rejection_reason_counts': rejection_reason_counts,
+            }
+            planning_diagnostic['selected'] = {
+                'pose_index': selected_pose,
+                'tile': (
+                    'tile_2'
+                    if selected_pose[0] >= tile_2_min_x_index
+                    else 'tile_1'
+                ),
+                'reason': 'highest_total_coverage_gain',
+                'winning_trajectory': [
+                    [int(value) for value in item.cpu().tolist()]
+                    for item in best_trajectory
+                ],
+                'coverage_gain': float(best_beam['coverage_gain']),
+                'total_coverage_gain': float(best_beam['total_coverage_gain']),
+            }
+            metrics_recorder.record_planning_diagnostic(planning_diagnostic)
 
         interpolation_step = 1
         for i in range(camera.n_interpolation_steps):
@@ -760,7 +1036,12 @@ def run_magician_test(params_name,
     )
 
     # Setup model and dataloader
-    dataloader, macarons, memory = setup_test(params, weights_path, device)
+    dataloader, macarons, memory = setup_test(
+        params,
+        weights_path,
+        device,
+        use_occupied_pose=validation_uses_occupied_pose(test_params),
+    )
 
     params.beam_width = test_params.beam_width
     params.beam_steps = test_params.beam_steps
@@ -775,7 +1056,7 @@ def run_magician_test(params_name,
         scene_names = [scene_dict['scene_name']]
         obj_names = [scene_dict['obj_name']]
         all_settings = [scene_dict['settings']]
-        occupied_pose_datas = [scene_dict['occupied_pose']]
+        occupied_pose_datas = [scene_dict.get('occupied_pose')]
 
         batch_size = len(scene_names)
 
@@ -798,16 +1079,23 @@ def run_magician_test(params_name,
 
             mirrored_scene = False
             mirrored_axis = None
+            mesh_transform = resolve_scene_mesh_transform(test_params, scene_name)
 
             # Load mesh
             mesh = load_scene(mesh_path, params.scene_scale_factor, device,
-                              mirror=mirrored_scene, mirrored_axis=mirrored_axis)
+                              mirror=mirrored_scene, mirrored_axis=mirrored_axis,
+                              texture_atlas_size=scene_texture_atlas_size(test_params),
+                              mesh_transform=mesh_transform)
            
             mesh_for_check = trimesh.load(mesh_path)
 
             if isinstance(mesh_for_check, trimesh.Scene):
                 mesh_for_check = mesh_for_check.dump(concatenate=True)
-            mesh_for_check.vertices *= params.scene_scale_factor
+            mesh_for_check.vertices = transform_scene_vertices(
+                mesh_for_check.vertices,
+                mesh_transform,
+                scene_scale_factor=params.scene_scale_factor,
+            )
 
             intersector = mesh_for_check.ray
 
@@ -881,6 +1169,7 @@ def run_magician_test(params_name,
                         X_cam_history=X_cam_history,
                         V_cam_history=V_cam_history,
                         final_point_count=len(full_pc),
+                        pose_index_history=camera.cam_idx_history,
                     )
                     experiment_metrics_path = write_online_metrics(
                         test_params, experiment_metrics

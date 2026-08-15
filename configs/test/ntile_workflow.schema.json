@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/RE-Vapor/AeroMAGIC/configs/test/ntile_workflow.schema.json",
+  "title": "AeroMAGIC N-tile workflow manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "issue",
+    "scene",
+    "source_scene_dir",
+    "assembly_manifest",
+    "baseline_config",
+    "params_config",
+    "calibration_report",
+    "output_root",
+    "python",
+    "gpu",
+    "run_id",
+    "budget_observations",
+    "start_grid_index",
+    "tile_partition",
+    "asset_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "issue": {"type": "string", "minLength": 1},
+    "scene": {"type": "string", "minLength": 1},
+    "source_scene_dir": {"type": "string", "minLength": 1},
+    "assembly_manifest": {"type": "string", "minLength": 1},
+    "baseline_config": {"type": "string", "minLength": 1},
+    "params_config": {"type": "string", "minLength": 1},
+    "calibration_report": {"type": "string", "minLength": 1},
+    "output_root": {"type": "string", "minLength": 1},
+    "python": {"type": "string", "minLength": 1},
+    "gpu": {"type": "integer", "minimum": 0},
+    "run_id": {"type": "string", "minLength": 1},
+    "budget_observations": {"type": "integer", "minimum": 2},
+    "start_grid_index": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 0},
+      "minItems": 5,
+      "maxItems": 5
+    },
+    "tile_partition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["axis", "boundaries", "tile_ids"],
+      "properties": {
+        "axis": {"type": "integer", "minimum": 0, "maximum": 2},
+        "boundaries": {
+          "type": "array",
+          "items": {"type": "number"},
+          "minItems": 1
+        },
+        "tile_ids": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "minItems": 2,
+          "uniqueItems": true
+        }
+      }
+    },
+    "asset_sha256": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "link_assets": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "range_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "quantile": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+        "min_points": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}
