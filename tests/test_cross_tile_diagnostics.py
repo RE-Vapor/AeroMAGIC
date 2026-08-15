@@ -2,6 +2,8 @@ import unittest
 
 import numpy as np
 
+from scripts.summarize_cross_tile_ablation import _bootstrap_evidence
+
 from macarons.utility.cross_tile_diagnostics import (
     audit_neighbor_generation,
     compute_partitioned_scene_coverage,
@@ -10,6 +12,36 @@ from macarons.utility.cross_tile_diagnostics import (
 
 
 class CrossTileDiagnosticsTests(unittest.TestCase):
+    def test_bootstrap_prefers_effective_sensor_range_gate_over_training_default(self):
+        metrics = {
+            "frames": [
+                {
+                    "sensor_range_gate": {"sensor_range_scene_units": 200.0},
+                    "depth_scene_units": {"min": 103.0},
+                    "partial_point_count": 12,
+                }
+            ],
+            "cross_tile": {
+                "planning": [
+                    {
+                        "imagined_gaussians": {"tile_1": 1, "tile_2": 2},
+                        "selected": {"pose_index": [12, 0, 0, 0, 0]},
+                        "beam_steps": [
+                            {
+                                "candidates": [
+                                    {"coverage_gain": 1.0},
+                                    {"coverage_gain": 2.0},
+                                ]
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+        evidence = _bootstrap_evidence(metrics)
+        self.assertEqual(evidence["sensor_range_scene_units"], 200.0)
+        self.assertFalse(evidence["frame_0_depth_min_exceeds_sensor_range"])
+
     def test_neighbor_audit_preserves_crossing_and_boundary_reasons(self):
         audit = audit_neighbor_generation([11, 0, 5, 0, 0], [24, 11, 13, 5, 10])
         crossing = [

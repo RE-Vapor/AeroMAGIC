@@ -163,8 +163,14 @@ def _bootstrap_evidence(metrics: Mapping[str, Any]) -> Mapping[str, Any]:
             encoding="utf-8"
         )
     )
-    sensor_range = float(params["_camera_management"]["sensor_range"])
     frame_zero = metrics["frames"][0]
+    range_gate = frame_zero.get("sensor_range_gate") or {}
+    sensor_range = float(
+        range_gate.get(
+            "sensor_range_scene_units",
+            params["_camera_management"]["sensor_range"],
+        )
+    )
     planning_zero = metrics["cross_tile"]["planning"][0]
     first_step = planning_zero["beam_steps"][0]
     gains = [float(candidate["coverage_gain"]) for candidate in first_step["candidates"]]
@@ -193,6 +199,15 @@ def _conclusion(
     s_frame_zero = s_metrics["cross_tile"]["planning"][0]
     t_effective = all(t_checks.values())
     if all(s_checks.values()) and t_effective:
+        if max(
+            _bootstrap_evidence(s_metrics)["sensor_range_scene_units"],
+            _bootstrap_evidence(t_metrics)["sensor_range_scene_units"],
+        ) > 70.0:
+            return (
+                "The calibrated sensor range restored nonempty first-frame mapping "
+                "and both S/T runs passed every preregistered crossing, sustained "
+                "tile-2 exploration, reconstruction, and coverage threshold."
+            )
         return (
             "S crossed and sustained tile-2 exploration while T explored normally: "
             "the stitched scene is usable; MYL-40 is best explained by its distant "
@@ -401,6 +416,7 @@ def main() -> None:
     parser.add_argument("--t-metrics", required=True)
     parser.add_argument("--myl40-metrics", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--issue", default="MYL-41")
     args = parser.parse_args()
 
     s_metrics = _load(args.s_metrics)
@@ -412,7 +428,7 @@ def main() -> None:
     output = Path(args.output_dir)
     result = {
         "schema_version": 1,
-        "issue": "MYL-41",
+        "issue": args.issue,
         "threshold_note": "The 3 percentage-point tile-2 threshold is preregistered engineering acceptance, not a paper standard.",
         "runs": {
             "S": {
