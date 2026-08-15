@@ -189,6 +189,7 @@ class TrajectoryMetricsRecorder:
                 ),
                 "provider_seconds": float(provider_seconds),
                 "geometry_seconds": float(geometry_seconds),
+                "sensor_range_gate": frame_data.get("sensor_range_gate"),
             }
         )
 

@@ -10,6 +10,8 @@ import random
 import time
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+import numpy as np
+
 from .depth_sources import DepthObservation, create_depth_provider
 
 
@@ -84,6 +86,7 @@ def apply_planning_validation_limits(params: Any, config: Any) -> Optional[int]:
         "planning_gathering_factor_multiplier",
         "proxy_cell_resolution",
         "score_threshold",
+        "sensor_range",
     }
     unknown = sorted(set(experiment_overrides) - allowed_overrides)
     if unknown:
@@ -92,6 +95,14 @@ def apply_planning_validation_limits(params: Any, config: Any) -> Optional[int]:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
             raise ValueError(f"experiment_param_overrides.{name} must be positive.")
         setattr(params, name, float(value))
+    if (
+        "sensor_range" in experiment_overrides
+        and hasattr(params, "zfar")
+        and params.sensor_range > params.zfar
+    ):
+        raise ValueError(
+            "experiment_param_overrides.sensor_range must not exceed zfar."
+        )
 
     for config_name, param_name in (
         ("experiment_shared_collision_gate", "planning_shared_collision_gate"),
@@ -104,6 +115,37 @@ def apply_planning_validation_limits(params: Any, config: Any) -> Optional[int]:
         if type(value) is not bool:
             raise ValueError(f"{config_name} must be a boolean.")
         setattr(params, param_name, value)
+
+    range_gate_enabled = _config_value(
+        config, "experiment_planning_range_gate_enabled", False
+    )
+    if type(range_gate_enabled) is not bool:
+        raise ValueError("experiment_planning_range_gate_enabled must be a boolean.")
+    range_gate_quantile = _config_value(
+        config, "experiment_planning_range_gate_quantile", 0.9
+    )
+    if (
+        isinstance(range_gate_quantile, bool)
+        or not isinstance(range_gate_quantile, (int, float))
+        or not 0.0 < float(range_gate_quantile) <= 1.0
+    ):
+        raise ValueError(
+            "experiment_planning_range_gate_quantile must be in (0, 1]."
+        )
+    range_gate_min_points = _config_value(
+        config, "experiment_planning_range_gate_min_points", 1
+    )
+    if (
+        isinstance(range_gate_min_points, bool)
+        or not isinstance(range_gate_min_points, int)
+        or range_gate_min_points < 1
+    ):
+        raise ValueError(
+            "experiment_planning_range_gate_min_points must be an integer >= 1."
+        )
+    params.planning_range_gate_enabled = range_gate_enabled
+    params.planning_range_gate_quantile = float(range_gate_quantile)
+    params.planning_range_gate_min_points = range_gate_min_points
     return max_start_positions
 
 
@@ -246,6 +288,87 @@ def _boolean_mask(value: Any) -> Any:
     return value
 
 
+def _as_numpy(value: Any) -> np.ndarray:
+    if hasattr(value, "detach"):
+        value = value.detach()
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        value = value.numpy()
+    return np.asarray(value)
+
+
+def assess_planning_sensor_range(
+    frame_data: Mapping[str, Any],
+    *,
+    sensor_range: float,
+    depth_quantile: float = 0.9,
+    minimum_partial_points: int = 1,
+) -> Mapping[str, Any]:
+    """Return a machine-readable first-frame sensor-range gate assessment.
+
+    Depth and ``sensor_range`` are both runtime scene units.  The quantile gate
+    catches configurations that retain a few near pixels while still clipping
+    most visible geometry; the point-count gate catches the stronger all-empty
+    mapping failure.
+    """
+
+    if isinstance(sensor_range, bool) or not isinstance(sensor_range, (int, float)):
+        raise ValueError("sensor_range must be a positive number.")
+    if sensor_range <= 0:
+        raise ValueError("sensor_range must be a positive number.")
+    if (
+        isinstance(depth_quantile, bool)
+        or not isinstance(depth_quantile, (int, float))
+        or not 0.0 < float(depth_quantile) <= 1.0
+    ):
+        raise ValueError("depth_quantile must be in (0, 1].")
+    if (
+        isinstance(minimum_partial_points, bool)
+        or not isinstance(minimum_partial_points, int)
+        or minimum_partial_points < 1
+    ):
+        raise ValueError("minimum_partial_points must be an integer >= 1.")
+
+    frame = frame_data["depth_frame"]
+    planning_mask = _as_numpy(frame_data["planning_mask"]).astype(bool, copy=False)
+    depth = _as_numpy(frame.depth_z)
+    rgb = _as_numpy(frame.rgb)
+    visible_depth = depth[planning_mask]
+    visible_depth = visible_depth[np.isfinite(visible_depth)]
+    partial_point_count = int(len(frame_data["part_pc"]))
+    rgb_finite = bool(np.isfinite(rgb).all())
+    depth_value = (
+        float(np.quantile(visible_depth, float(depth_quantile)))
+        if visible_depth.size
+        else None
+    )
+    failures = []
+    if not rgb_finite:
+        failures.append("rgb_non_finite")
+    if not visible_depth.size:
+        failures.append("no_finite_planning_depth")
+    if partial_point_count < minimum_partial_points:
+        failures.append("range_filtered_mapping_below_minimum")
+    if depth_value is not None and depth_value > float(sensor_range):
+        failures.append("visible_depth_quantile_exceeds_sensor_range")
+    return {
+        "schema_version": 1,
+        "accepted": not failures,
+        "sensor_range_scene_units": float(sensor_range),
+        "depth_quantile": float(depth_quantile),
+        "depth_quantile_scene_units": depth_value,
+        "finite_planning_depth_count": int(visible_depth.size),
+        "depth_values_within_sensor_range": int(
+            np.count_nonzero(visible_depth <= float(sensor_range))
+        ),
+        "partial_point_count": partial_point_count,
+        "minimum_partial_points": minimum_partial_points,
+        "rgb_finite": rgb_finite,
+        "failure_reasons": failures,
+    }
+
+
 def process_planning_depth_frame(
     *,
     camera: Any,
@@ -255,6 +378,9 @@ def process_planning_depth_frame(
     gathering_factor: float,
     sensor_range: float,
     metrics_recorder: Any = None,
+    enforce_sensor_range_gate: bool = False,
+    sensor_range_gate_quantile: float = 0.9,
+    sensor_range_gate_min_points: int = 1,
 ) -> Mapping[str, Any]:
     """Acquire one provider frame and derive geometry from its trusted mask."""
 
@@ -304,12 +430,33 @@ def process_planning_depth_frame(
         "planning_mask": planning_mask,
         "depth_frame": depth_frame,
     }
+    if enforce_sensor_range_gate:
+        result["sensor_range_gate"] = assess_planning_sensor_range(
+            result,
+            sensor_range=sensor_range,
+            depth_quantile=sensor_range_gate_quantile,
+            minimum_partial_points=sensor_range_gate_min_points,
+        )
     if metrics_recorder is not None:
         metrics_recorder.synchronize()
         metrics_recorder.record_frame(
             result,
             provider_seconds=provider_seconds,
             geometry_seconds=time.perf_counter() - geometry_started,
+        )
+    gate = result.get("sensor_range_gate")
+    if gate is not None and not gate["accepted"]:
+        raise RuntimeError(
+            "planning sensor-range gate failed before trajectory selection: "
+            + ", ".join(gate["failure_reasons"])
+            + f"; sensor_range={gate['sensor_range_scene_units']:.3f} scene units"
+            + (
+                f", depth_q{gate['depth_quantile']:.2f}="
+                f"{gate['depth_quantile_scene_units']:.3f}"
+                if gate["depth_quantile_scene_units"] is not None
+                else ""
+            )
+            + f", partial_points={gate['partial_point_count']}"
         )
     return result
 

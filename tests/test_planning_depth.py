@@ -6,6 +6,7 @@ import numpy as np
 from macarons.utility.depth_sources import DepthFrame, GTDepthProvider
 from macarons.utility.planning_depth import (
     apply_planning_validation_limits,
+    assess_planning_sensor_range,
     compute_planning_coverage,
     create_scene_depth_providers,
     path_is_blocked,
@@ -48,6 +49,9 @@ class PlanningValidationLimitTests(unittest.TestCase):
         self.assertEqual(params.n_poses_in_trajectory, 100)
         self.assertFalse(params.planning_shared_collision_gate)
         self.assertFalse(params.planning_normalize_coverage_by_visibility)
+        self.assertFalse(params.planning_range_gate_enabled)
+        self.assertEqual(params.planning_range_gate_quantile, 0.9)
+        self.assertEqual(params.planning_range_gate_min_points, 1)
         self.assertFalse(hasattr(params, "planning_gathering_factor_multiplier"))
 
     def test_rejects_invalid_limits(self):
@@ -89,25 +93,43 @@ class PlanningValidationLimitTests(unittest.TestCase):
                     )
 
     def test_applies_only_allowlisted_experiment_mapping_overrides(self):
-        params = SimpleNamespace(gathering_factor=0.05, carving_tolerance=10.0)
+        params = SimpleNamespace(
+            gathering_factor=0.05,
+            carving_tolerance=10.0,
+            sensor_range=70.0,
+            zfar=750.0,
+        )
         apply_planning_validation_limits(
             params,
             {
                 "experiment_param_overrides": {
                     "planning_gathering_factor_multiplier": 2.0,
                     "carving_tolerance": 5.0,
+                    "sensor_range": 200.0,
                 },
                 "experiment_shared_collision_gate": True,
                 "experiment_normalize_coverage_by_visibility": True,
+                "experiment_planning_range_gate_enabled": True,
+                "experiment_planning_range_gate_quantile": 0.9,
+                "experiment_planning_range_gate_min_points": 10,
             },
         )
         self.assertEqual(params.planning_gathering_factor_multiplier, 2.0)
         self.assertEqual(params.carving_tolerance, 5.0)
+        self.assertEqual(params.sensor_range, 200.0)
         self.assertTrue(params.planning_shared_collision_gate)
         self.assertTrue(params.planning_normalize_coverage_by_visibility)
+        self.assertTrue(params.planning_range_gate_enabled)
+        self.assertEqual(params.planning_range_gate_quantile, 0.9)
+        self.assertEqual(params.planning_range_gate_min_points, 10)
         with self.assertRaisesRegex(ValueError, "Unsupported"):
             apply_planning_validation_limits(
                 SimpleNamespace(), {"experiment_param_overrides": {"n_poses_in_trajectory": 1}}
+            )
+        with self.assertRaisesRegex(ValueError, "must not exceed zfar"):
+            apply_planning_validation_limits(
+                SimpleNamespace(sensor_range=70.0, zfar=100.0),
+                {"experiment_param_overrides": {"sensor_range": 101.0}},
             )
 
     def test_fixed_seed_helper_and_shared_collision_gate(self):
@@ -302,6 +324,69 @@ class PlanningPipelineTests(unittest.TestCase):
         np.testing.assert_array_equal(raw, [0.75])
         self.assertEqual(normalized, 1.5)
         self.assertEqual(gt_scene.calls, [(covered_scene, 0.1)])
+
+    def test_sensor_range_gate_reports_pass_and_fails_before_planning(self):
+        valid = np.ones((1, 2, 2, 1), dtype=bool)
+        frame = DepthFrame(
+            rgb=np.ones((1, 2, 2, 3), dtype=np.float32),
+            depth_z=np.full((1, 2, 2, 1), 2.0, dtype=np.float32),
+            valid_mask=valid,
+            error_mask=valid,
+            R=np.eye(3, dtype=np.float32)[None],
+            T=np.zeros((1, 3), dtype=np.float32),
+            source="DA3",
+        )
+        provider = _Provider(frame)
+        accepted = process_planning_depth_frame(
+            camera=_Camera(),
+            depth_provider=provider,
+            proxy_scene=_ProxyScene(),
+            device="cpu",
+            gathering_factor=1.0,
+            sensor_range=3.0,
+            enforce_sensor_range_gate=True,
+            sensor_range_gate_quantile=0.9,
+        )
+        self.assertTrue(accepted["sensor_range_gate"]["accepted"])
+        self.assertEqual(
+            accepted["sensor_range_gate"]["depth_values_within_sensor_range"], 4
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError, "visible_depth_quantile_exceeds_sensor_range"
+        ):
+            process_planning_depth_frame(
+                camera=_Camera(),
+                depth_provider=_Provider(frame),
+                proxy_scene=_ProxyScene(),
+                device="cpu",
+                gathering_factor=1.0,
+                sensor_range=1.0,
+                enforce_sensor_range_gate=True,
+                sensor_range_gate_quantile=0.9,
+            )
+
+    def test_sensor_range_gate_rejects_empty_mapping_with_valid_rgb_and_depth(self):
+        valid = np.ones((1, 1, 1, 1), dtype=bool)
+        frame = DepthFrame(
+            rgb=np.ones((1, 1, 1, 3), dtype=np.float32),
+            depth_z=np.ones((1, 1, 1, 1), dtype=np.float32),
+            valid_mask=valid,
+            error_mask=valid,
+            R=np.eye(3, dtype=np.float32)[None],
+            T=np.zeros((1, 3), dtype=np.float32),
+            source="DA3",
+        )
+        frame_data = {
+            "depth_frame": frame,
+            "planning_mask": valid,
+            "part_pc": np.empty((0, 3), dtype=np.float32),
+        }
+        report = assess_planning_sensor_range(frame_data, sensor_range=2.0)
+        self.assertFalse(report["accepted"])
+        self.assertIn(
+            "range_filtered_mapping_below_minimum", report["failure_reasons"]
+        )
 
 
 if __name__ == "__main__":

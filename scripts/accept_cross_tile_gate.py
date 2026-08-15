@@ -29,6 +29,7 @@ def main() -> None:
     frame = metrics["frames"][0]
     planning = metrics["cross_tile"]["planning"][0]
     seam_collision = planning["seam_segment_collision"]
+    sensor_range_gate = frame.get("sensor_range_gate")
 
     try:
         import torch
@@ -86,6 +87,23 @@ def main() -> None:
         checks["S_direct_crossing_candidate_legal"] = planning[
             "direct_crossing_candidate_legal"
         ] is True
+    if manifest.get("planning_range_gate_enabled", False):
+        checks.update(
+            {
+                "frame_zero_mapping_nonempty_after_range_filter": (
+                    frame["partial_point_count"]
+                    >= manifest.get("planning_range_gate_min_points", 1)
+                ),
+                "frame_zero_proxy_fov_nonempty_after_range_filter": (
+                    frame["proxy_points_in_fov"] > 0
+                ),
+                "sensor_range_gate_recorded": sensor_range_gate is not None,
+                "sensor_range_gate_accepted": (
+                    sensor_range_gate is not None
+                    and sensor_range_gate.get("accepted") is True
+                ),
+            }
+        )
     result = {
         "schema_version": 1,
         "label": manifest["label"],
@@ -108,6 +126,9 @@ def main() -> None:
             "renderer_depth_scene_units": renderer_depth_stats,
             "rgb_finite": rgb_finite,
             "capture_error": capture_error,
+            "sensor_range_gate": sensor_range_gate,
+            "partial_point_count": frame["partial_point_count"],
+            "proxy_points_in_fov": frame["proxy_points_in_fov"],
         },
         "seam_segment_collision": seam_collision,
         "candidate_summary": planning["candidate_summary"],

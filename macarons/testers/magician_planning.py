@@ -427,6 +427,15 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
             ),
             sensor_range=params.sensor_range,
             metrics_recorder=metrics_recorder,
+            enforce_sensor_range_gate=(
+                pose_i == 0 and getattr(params, "planning_range_gate_enabled", False)
+            ),
+            sensor_range_gate_quantile=getattr(
+                params, "planning_range_gate_quantile", 0.9
+            ),
+            sensor_range_gate_min_points=getattr(
+                params, "planning_range_gate_min_points", 1
+            ),
         )
             
 

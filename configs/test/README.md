@@ -29,6 +29,10 @@ Below is a detailed description of all the hyperparameters involved in evaluatin
 | `scene_mesh_transforms` | object | Optional per-scene exporter/world-coordinate adaptation. Each entry may specify an axis permutation, axis signs, translation, and positive preprocessing scale. Missing scenes use the identity transform. |
 | `scene_texture_atlas_size` | int | Optional positive per-face texture atlas resolution used by both planning entry points and the real-scene CUDA gate. Defaults to the legacy value `32`; large textured meshes can lower it to bound loader memory without changing geometry or planning settings. |
 | `validation_use_occupied_pose` | bool | Defaults to `true`. Set `false` only for a validated custom scene without `occupied_pose.pt`; mesh collision checks remain independent. |
+| `experiment_param_overrides.sensor_range` | float | Optional positive runtime-scene-unit override for an isolated experiment. It must not exceed renderer `zfar`; omitting it preserves the model configuration default. |
+| `experiment_planning_range_gate_enabled` | bool | Enables a first-observation fail-fast check before any next-view selection. It rejects non-finite RGB, absent valid depth, too few mapped points after range filtering, or a configured visible-depth quantile beyond `sensor_range`. Defaults to `false`. |
+| `experiment_planning_range_gate_quantile` | float | Visible-depth quantile checked by the range gate, in `(0, 1]`; defaults to `0.9`. |
+| `experiment_planning_range_gate_min_points` | int | Minimum range-filtered partial point count required by the gate; defaults to `1`. |
 
 Depth-source selection is intentionally strict. With `use_perfect_depth_map=true`,
 the GT provider is constructed and `kind_depth_map` is ignored, even if it is
@@ -41,6 +45,12 @@ version. Pose translations are converted from calibrated scene units to meters
 before pose-conditioned inference, then metric depth is converted back to scene
 units. Training uses
 the separate `use_perfect_depth` option and is unchanged.
+
+`scripts/calibrate_scene_sensor_range.py` derives an explicit range from an
+assembly manifest, the runtime camera lattice, renderer limits, and preregistered
+start-view depth evidence. The report records the unit chain, geometry bound,
+formula inputs, rounded recommendation, and hard-cap failure condition; the
+script never edits the training default.
 
 `scene_metric_calibrations.json` records the evidence and arithmetic behind
 accepted metric scales. `test_da3_eiffel_real_mesh_config.json` is the bounded

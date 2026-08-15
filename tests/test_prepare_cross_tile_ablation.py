@@ -71,6 +71,13 @@ class PrepareCrossTileAblationTests(unittest.TestCase):
                     "4",
                     "--gpu-t",
                     "5",
+                    "--issue",
+                    "MYL-42",
+                    "--run-prefix",
+                    "myl42_calibrated",
+                    "--sensor-range",
+                    "200",
+                    "--planning-range-gate",
                 ],
                 cwd=ROOT,
                 check=True,
@@ -93,6 +100,15 @@ class PrepareCrossTileAblationTests(unittest.TestCase):
             self.assertEqual(config["validation_n_poses_in_trajectory"], 100)
             self.assertTrue(config["experiment_cross_tile_diagnostics_enabled"])
             self.assertEqual(config["beam_width"], 10)
+            self.assertEqual(config["experiment_param_overrides"]["sensor_range"], 200.0)
+            self.assertTrue(config["experiment_planning_range_gate_enabled"])
+            manifest = json.loads((output / "s/manifest.json").read_text())
+            self.assertEqual(manifest["issue"], "MYL-42")
+            self.assertEqual(manifest["sensor_range_scene_units"], 200.0)
+            self.assertTrue(manifest["planning_range_gate_enabled"])
+            self.assertTrue(
+                manifest["run_id"].startswith("myl42_calibrated_s_")
+            )
 
 
 if __name__ == "__main__":

@@ -65,7 +65,26 @@ def main() -> None:
     parser.add_argument("--gpu-s", type=int, required=True)
     parser.add_argument("--gpu-t", type=int, required=True)
     parser.add_argument("--scene", default="12-NW-6C-7_8")
+    parser.add_argument("--issue", default="MYL-41")
+    parser.add_argument("--run-prefix", default="myl41_cross_tile")
+    parser.add_argument("--sensor-range", type=float)
+    parser.add_argument("--planning-range-gate", action="store_true")
+    parser.add_argument("--planning-range-gate-quantile", type=float, default=0.9)
+    parser.add_argument("--planning-range-gate-min-points", type=int, default=1)
+    parser.add_argument("--calibration-report")
     args = parser.parse_args()
+
+    if args.sensor_range is not None and args.sensor_range <= 0:
+        raise SystemExit("--sensor-range must be positive")
+    if not 0.0 < args.planning_range_gate_quantile <= 1.0:
+        raise SystemExit("--planning-range-gate-quantile must be in (0, 1]")
+    if args.planning_range_gate_min_points < 1:
+        raise SystemExit("--planning-range-gate-min-points must be >= 1")
+    calibration_report = (
+        Path(args.calibration_report).resolve() if args.calibration_report else None
+    )
+    if calibration_report is not None and not calibration_report.is_file():
+        raise SystemExit(f"missing calibration report: {calibration_report}")
 
     baseline_path = Path(args.baseline_config).resolve()
     source_scene = Path(args.source_scene_dir).resolve()
@@ -106,7 +125,7 @@ def main() -> None:
     runs = []
     for label, start_index in STARTS.items():
         slug = label.lower()
-        run_id = f"myl41_cross_tile_{slug}_obs101_beam10"
+        run_id = f"{args.run_prefix}_{slug}_obs101_beam10"
         run_root = output_root / slug
         scene_view = run_root / "dataset" / "Macarons++" / args.scene
         scene_view.mkdir(parents=True)
@@ -121,6 +140,9 @@ def main() -> None:
 
         gpu = args.gpu_s if label == "S" else args.gpu_t
         config = json.loads(json.dumps(baseline))
+        experiment_overrides = dict(config.get("experiment_param_overrides", {}))
+        if args.sensor_range is not None:
+            experiment_overrides["sensor_range"] = args.sensor_range
         config.update(
             {
                 "numGPU": gpu,
@@ -140,6 +162,14 @@ def main() -> None:
                 "experiment_cross_tile_min_x_index": 12,
                 "experiment_cross_tile_gate_from_index": [11, 9, 5, 1, 3],
                 "experiment_cross_tile_gate_to_index": [12, 9, 5, 1, 3],
+                "experiment_param_overrides": experiment_overrides,
+                "experiment_planning_range_gate_enabled": args.planning_range_gate,
+                "experiment_planning_range_gate_quantile": (
+                    args.planning_range_gate_quantile
+                ),
+                "experiment_planning_range_gate_min_points": (
+                    args.planning_range_gate_min_points
+                ),
             }
         )
         config_path = run_root / "config.json"
@@ -179,7 +209,7 @@ def main() -> None:
         ]
         run_manifest = {
             "schema_version": 1,
-            "issue": "MYL-41",
+            "issue": args.issue,
             "label": label,
             "run_id": run_id,
             "scene": args.scene,
@@ -201,6 +231,16 @@ def main() -> None:
             "gate_config": str(gate_config_path),
             "gate_command": gate_command,
             "gpu": gpu,
+            "sensor_range_scene_units": args.sensor_range,
+            "planning_range_gate_enabled": args.planning_range_gate,
+            "planning_range_gate_quantile": args.planning_range_gate_quantile,
+            "planning_range_gate_min_points": args.planning_range_gate_min_points,
+            "calibration_report": (
+                str(calibration_report) if calibration_report is not None else None
+            ),
+            "calibration_report_sha256": (
+                _sha256(calibration_report) if calibration_report is not None else None
+            ),
             "paths": {
                 "cache": str(run_root / "cache"),
                 "metrics": str(run_root / "metrics"),
@@ -218,7 +258,7 @@ def main() -> None:
     manifest = {
         "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "issue": "MYL-41",
+        "issue": args.issue,
         "scene": args.scene,
         "position_only_ablation": True,
         "baseline_config": str(baseline_path),
