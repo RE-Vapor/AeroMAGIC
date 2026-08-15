@@ -84,6 +84,9 @@ The LMDB file (specified by `lmdb_dir_name`) stores the following data for each 
 
 ## Exploring Arbitrary 3D Scenes
 
+For incrementally assembling adjacent OpenHK3D tiles without manual Blender
+alignment, see [the OpenHK3D scene assembly guide](docs/openhk3d_scene_assembly.md).
+
 <details>
 <summary><b>Click to expand: how to run MAGICIAN on your own scene</b></summary>
 
