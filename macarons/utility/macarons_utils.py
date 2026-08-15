@@ -479,8 +479,7 @@ def load_scene(mesh_path, scene_scale_factor, device,
     if mirror:
         for axis in mirrored_axis:
             verts[..., axis] = -verts[..., axis]
-    torch.tensor()
-    
+
     return Meshes(
         verts=[verts],
         faces=[faces.verts_idx],
