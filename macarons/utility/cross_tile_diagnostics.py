@@ -27,6 +27,48 @@ NEIGHBOR_SHIFTS = (
 )
 
 
+def validate_tile_partition(partition: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Validate an ordered N-tile partition along any runtime world axis."""
+
+    if not isinstance(partition, Mapping):
+        raise ValueError("tile partition must be an object")
+    axis = partition.get("axis")
+    if isinstance(axis, bool) or not isinstance(axis, int) or axis not in (0, 1, 2):
+        raise ValueError("tile partition axis must be 0, 1, or 2")
+    boundaries = partition.get("boundaries")
+    tile_ids = partition.get("tile_ids")
+    if not isinstance(boundaries, Sequence) or isinstance(boundaries, (str, bytes)):
+        raise ValueError("tile partition boundaries must be an array")
+    if not isinstance(tile_ids, Sequence) or isinstance(tile_ids, (str, bytes)):
+        raise ValueError("tile partition tile_ids must be an array")
+    normalized_boundaries = []
+    for value in boundaries:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("tile partition boundaries must be finite numbers")
+        value = float(value)
+        if not np.isfinite(value):
+            raise ValueError("tile partition boundaries must be finite numbers")
+        normalized_boundaries.append(value)
+    if any(
+        right <= left
+        for left, right in zip(normalized_boundaries, normalized_boundaries[1:])
+    ):
+        raise ValueError("tile partition boundaries must be strictly increasing")
+    normalized_ids = [str(value) for value in tile_ids]
+    if len(normalized_ids) != len(normalized_boundaries) + 1:
+        raise ValueError("tile_ids must contain exactly len(boundaries) + 1 values")
+    if any(not value for value in normalized_ids) or len(set(normalized_ids)) != len(
+        normalized_ids
+    ):
+        raise ValueError("tile_ids must be non-empty and unique")
+    return {
+        "axis": axis,
+        "boundaries": normalized_boundaries,
+        "tile_ids": normalized_ids,
+        "interval_semantics": "(-inf,b0], (b0,b1], ..., (bN,+inf)",
+    }
+
+
 def _list(value: Any) -> list:
     if hasattr(value, "detach"):
         value = value.detach()
@@ -74,16 +116,16 @@ def audit_neighbor_generation(
     }
 
 
-def compute_partitioned_scene_coverage(
+def compute_tiled_scene_coverage(
     gt_scene: Any,
     recovered_scene: Any,
     *,
-    seam_x: float,
+    tile_partition: Mapping[str, Any],
     surface_epsilon: float,
     normalization: float,
     reconstruction_points: Any,
 ) -> Mapping[str, Any]:
-    """Compute exact per-tile coverage using the native cell/reference contract.
+    """Compute exact N-tile coverage using the native cell/reference contract.
 
     ``raw`` is the covered-reference fraction within a tile. ``normalized`` is
     divided by the same visibility calibration as global coverage, so the two
@@ -94,10 +136,15 @@ def compute_partitioned_scene_coverage(
         raise ValueError("normalization must be positive")
     import torch
 
+    partition = validate_tile_partition(tile_partition)
+    tile_ids = partition["tile_ids"]
     counts = {
-        "tile_1": {"covered_points": 0, "reference_points": 0},
-        "tile_2": {"covered_points": 0, "reference_points": 0},
+        tile_id: {"covered_points": 0, "reference_points": 0}
+        for tile_id in tile_ids
     }
+    boundaries = torch.tensor(
+        partition["boundaries"], dtype=torch.float64
+    )
     epsilon = float(surface_epsilon)
     for key, gt_cell in gt_scene.cells.items():
         gt_points = gt_cell.cell_pts
@@ -111,44 +158,54 @@ def compute_partitioned_scene_coverage(
             covered = distance < epsilon
         else:
             covered = torch.zeros(len(gt_points), dtype=torch.bool, device=gt_points.device)
-        tile_1_mask = gt_points[:, 0] <= seam_x
-        for tile, mask in (("tile_1", tile_1_mask), ("tile_2", ~tile_1_mask)):
-            counts[tile]["reference_points"] += int(mask.sum().item())
-            counts[tile]["covered_points"] += int((covered & mask).sum().item())
+        device_boundaries = boundaries.to(gt_points.device)
+        assignments = torch.bucketize(
+            gt_points[:, partition["axis"]].double(),
+            device_boundaries,
+            right=False,
+        )
+        for tile_index, tile_id in enumerate(tile_ids):
+            mask = assignments == tile_index
+            counts[tile_id]["reference_points"] += int(mask.sum().item())
+            counts[tile_id]["covered_points"] += int((covered & mask).sum().item())
 
     reconstruction = np.asarray(_list(reconstruction_points), dtype=np.float64)
     if reconstruction.size:
         reconstruction = reconstruction.reshape(-1, 3)
+        assignments = np.searchsorted(
+            np.asarray(partition["boundaries"], dtype=np.float64),
+            reconstruction[:, partition["axis"]],
+            side="left",
+        )
         reconstructed_counts = {
-            "tile_1": int(np.sum(reconstruction[:, 0] <= seam_x)),
-            "tile_2": int(np.sum(reconstruction[:, 0] > seam_x)),
+            tile_id: int(np.sum(assignments == tile_index))
+            for tile_index, tile_id in enumerate(tile_ids)
         }
     else:
-        reconstructed_counts = {"tile_1": 0, "tile_2": 0}
+        reconstructed_counts = {tile_id: 0 for tile_id in tile_ids}
 
     total_covered = 0
     total_reference = 0
-    for tile in ("tile_1", "tile_2"):
-        numerator = counts[tile]["covered_points"]
-        denominator = counts[tile]["reference_points"]
+    for tile_id in tile_ids:
+        numerator = counts[tile_id]["covered_points"]
+        denominator = counts[tile_id]["reference_points"]
         raw = numerator / denominator if denominator else 0.0
-        counts[tile].update(
+        counts[tile_id].update(
             {
                 "raw": float(raw),
                 "normalized": float(raw / normalization),
-                "reconstruction_points": reconstructed_counts[tile],
+                "reconstruction_points": reconstructed_counts[tile_id],
             }
         )
         total_covered += numerator
         total_reference += denominator
     combined_raw = total_covered / total_reference if total_reference else 0.0
     return {
-        "seam_x": float(seam_x),
+        "tile_partition": partition,
         "normalization": float(normalization),
         "raw_definition": "covered_reference_points / tile_reference_points",
         "normalized_definition": "raw / global_visibility_ratio",
-        "tile_1": counts["tile_1"],
-        "tile_2": counts["tile_2"],
+        "tiles": counts,
         "combined": {
             "covered_points": total_covered,
             "reference_points": total_reference,
@@ -157,6 +214,42 @@ def compute_partitioned_scene_coverage(
             "reconstruction_points": sum(reconstructed_counts.values()),
         },
     }
+
+
+def compute_partitioned_scene_coverage(
+    gt_scene: Any,
+    recovered_scene: Any,
+    *,
+    seam_x: float,
+    surface_epsilon: float,
+    normalization: float,
+    reconstruction_points: Any,
+) -> Mapping[str, Any]:
+    """Backward-compatible two-tile wrapper around N-tile coverage."""
+
+    result = dict(
+        compute_tiled_scene_coverage(
+            gt_scene,
+            recovered_scene,
+            tile_partition={
+                "axis": 0,
+                "boundaries": [float(seam_x)],
+                "tile_ids": ["tile_1", "tile_2"],
+            },
+            surface_epsilon=surface_epsilon,
+            normalization=normalization,
+            reconstruction_points=reconstruction_points,
+        )
+    )
+    tiles = result.pop("tiles")
+    result.update(
+        {
+            "seam_x": float(seam_x),
+            "tile_1": tiles["tile_1"],
+            "tile_2": tiles["tile_2"],
+        }
+    )
+    return result
 
 
 def _longest_true_run(values: Iterable[bool]) -> int:

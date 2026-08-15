@@ -18,7 +18,9 @@ import numpy as np
 
 from .cross_tile_diagnostics import (
     compute_partitioned_scene_coverage,
+    compute_tiled_scene_coverage,
     summarize_cross_tile_trajectory,
+    validate_tile_partition,
 )
 
 
@@ -119,6 +121,22 @@ class TrajectoryMetricsRecorder:
             )
         )
         self.cross_tile_coverage = []
+        tile_metrics_enabled = _config_value(
+            config, "experiment_tile_metrics_enabled", False
+        )
+        if type(tile_metrics_enabled) is not bool:
+            raise ValueError("experiment_tile_metrics_enabled must be a boolean.")
+        self.tile_metrics_enabled = tile_metrics_enabled
+        tile_partition = _config_value(config, "experiment_tile_partition", None)
+        if self.tile_metrics_enabled:
+            if tile_partition is None:
+                raise ValueError(
+                    "experiment_tile_partition is required when tile metrics are enabled."
+                )
+            self.tile_partition = validate_tile_partition(tile_partition)
+        else:
+            self.tile_partition = None
+        self.tile_coverage = []
         self.planning_diagnostics = []
         self.started_at = time.perf_counter()
         self._reset_cuda_peak()
@@ -215,6 +233,42 @@ class TrajectoryMetricsRecorder:
         global_raw: Any,
         global_normalized: float,
     ) -> None:
+        if not self.cross_tile_enabled and not self.tile_metrics_enabled:
+            return
+        global_raw_value = _scalar(global_raw)
+        if self.tile_metrics_enabled:
+            tiled_frame = dict(
+                compute_tiled_scene_coverage(
+                    gt_scene,
+                    covered_scene,
+                    tile_partition=self.tile_partition,
+                    surface_epsilon=surface_epsilon,
+                    normalization=normalization,
+                    reconstruction_points=reconstruction_points,
+                )
+            )
+            tiled_frame["frame_id"] = len(self.tile_coverage)
+            tiled_frame["global_raw"] = global_raw_value
+            tiled_frame["global_normalized"] = float(global_normalized)
+            tiled_frame["combined_raw_error"] = float(
+                tiled_frame["combined"]["raw"] - tiled_frame["global_raw"]
+            )
+            tiled_frame["combined_normalized_error"] = float(
+                tiled_frame["combined"]["normalized"]
+                - tiled_frame["global_normalized"]
+            )
+            previous_tiles = (
+                self.tile_coverage[-1]["tiles"] if self.tile_coverage else None
+            )
+            for tile_id, tile in tiled_frame["tiles"].items():
+                previous = previous_tiles[tile_id] if previous_tiles else None
+                tile["new_covered_points"] = tile["covered_points"] - (
+                    previous["covered_points"] if previous else 0
+                )
+                tile["new_reconstruction_points"] = tile[
+                    "reconstruction_points"
+                ] - (previous["reconstruction_points"] if previous else 0)
+            self.tile_coverage.append(tiled_frame)
         if not self.cross_tile_enabled:
             return
         frame = dict(
@@ -228,7 +282,7 @@ class TrajectoryMetricsRecorder:
             )
         )
         frame["frame_id"] = len(self.cross_tile_coverage)
-        frame["global_raw"] = _scalar(global_raw)
+        frame["global_raw"] = global_raw_value
         frame["global_normalized"] = float(global_normalized)
         frame["combined_raw_error"] = float(
             frame["combined"]["raw"] - frame["global_raw"]
@@ -328,6 +382,26 @@ class TrajectoryMetricsRecorder:
                     pose_indices,
                     seam_x=self.cross_tile_seam_x,
                     tile_coverage=self.cross_tile_coverage,
+                ),
+            }
+        if self.tile_metrics_enabled:
+            metrics["tile_metrics"] = {
+                "schema_version": 1,
+                "partition": self.tile_partition,
+                "coverage": self.tile_coverage,
+                "recombination_max_abs_raw_error": max(
+                    (
+                        abs(frame["combined_raw_error"])
+                        for frame in self.tile_coverage
+                    ),
+                    default=0.0,
+                ),
+                "recombination_max_abs_normalized_error": max(
+                    (
+                        abs(frame["combined_normalized_error"])
+                        for frame in self.tile_coverage
+                    ),
+                    default=0.0,
                 ),
             }
         return metrics

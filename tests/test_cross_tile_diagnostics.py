@@ -7,7 +7,9 @@ from scripts.summarize_cross_tile_ablation import _bootstrap_evidence
 from macarons.utility.cross_tile_diagnostics import (
     audit_neighbor_generation,
     compute_partitioned_scene_coverage,
+    compute_tiled_scene_coverage,
     summarize_cross_tile_trajectory,
+    validate_tile_partition,
 )
 
 
@@ -81,6 +83,52 @@ class CrossTileDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["tile_2"]["reference_points"], 2)
         self.assertAlmostEqual(result["combined"]["raw"], 2 / 3)
         self.assertAlmostEqual(result["combined"]["normalized"], 4 / 3)
+
+    def test_three_tile_coverage_recombines_and_partition_is_manifest_driven(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch is unavailable")
+
+        class Cell:
+            def __init__(self, points):
+                self.cell_pts = torch.tensor(points, dtype=torch.float32)
+
+        class Scene:
+            def __init__(self, points):
+                self.cells = {"all": Cell(points)}
+
+        gt = Scene([[-1, 0, 0], [5, 0, 0], [15, 0, 0], [25, 0, 0]])
+        recovered = Scene([[-1, 0, 0], [15, 0, 0], [25, 0, 0]])
+        partition = {
+            "axis": 0,
+            "boundaries": [10.0, 20.0],
+            "tile_ids": ["west", "center", "east"],
+        }
+        result = compute_tiled_scene_coverage(
+            gt,
+            recovered,
+            tile_partition=partition,
+            surface_epsilon=0.1,
+            normalization=1.0,
+            reconstruction_points=[[-1, 0, 0], [15, 0, 0], [25, 0, 0]],
+        )
+        self.assertEqual(result["tiles"]["west"]["reference_points"], 2)
+        self.assertEqual(result["tiles"]["center"]["reference_points"], 1)
+        self.assertEqual(result["tiles"]["east"]["reference_points"], 1)
+        self.assertEqual(result["combined"]["reference_points"], 4)
+        self.assertEqual(result["combined"]["covered_points"], 3)
+        self.assertAlmostEqual(result["combined"]["raw"], 0.75)
+
+    def test_partition_rejects_ambiguous_or_mismatched_schema(self):
+        with self.assertRaisesRegex(ValueError, "strictly increasing"):
+            validate_tile_partition(
+                {"axis": 0, "boundaries": [20, 10], "tile_ids": ["a", "b", "c"]}
+            )
+        with self.assertRaisesRegex(ValueError, r"len\(boundaries\)"):
+            validate_tile_partition(
+                {"axis": 0, "boundaries": [10], "tile_ids": ["a"]}
+            )
 
     def test_trajectory_summary_requires_sustained_tile_two_activity(self):
         positions = np.asarray(

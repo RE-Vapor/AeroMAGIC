@@ -33,6 +33,8 @@ Below is a detailed description of all the hyperparameters involved in evaluatin
 | `experiment_planning_range_gate_enabled` | bool | Enables a first-observation fail-fast check before any next-view selection. It rejects non-finite RGB, absent valid depth, too few mapped points after range filtering, or a configured visible-depth quantile beyond `sensor_range`. Defaults to `false`. |
 | `experiment_planning_range_gate_quantile` | float | Visible-depth quantile checked by the range gate, in `(0, 1]`; defaults to `0.9`. |
 | `experiment_planning_range_gate_min_points` | int | Minimum range-filtered partial point count required by the gate; defaults to `1`. |
+| `experiment_tile_metrics_enabled` | bool | Opt-in generic N-tile coverage accounting. Requires `experiment_tile_partition`; defaults to `false`. |
+| `experiment_tile_partition` | object | Runtime-axis partition with `axis`, `N-1` strictly increasing `boundaries`, and `N` unique `tile_ids`. Per-tile numerators and denominators recombine exactly into global coverage. |
 
 Depth-source selection is intentionally strict. With `use_perfect_depth_map=true`,
 the GT provider is constructed and `kind_depth_map` is ignored, even if it is
@@ -51,6 +53,11 @@ assembly manifest, the runtime camera lattice, renderer limits, and preregistere
 start-view depth evidence. The report records the unit chain, geometry bound,
 formula inputs, rounded recommendation, and hard-cap failure condition; the
 script never edits the training default.
+
+`scripts/prepare_ntile_workflow.py` turns a hash-pinned manifest into an
+isolated short gate and full run. Its JSON contract is
+`ntile_workflow.schema.json`; `docs/ntile_workflow.md` describes the generated
+commands, automatic acceptance checks, and the minimal N-to-N+1 extension.
 
 `scene_metric_calibrations.json` records the evidence and arithmetic behind
 accepted metric scales. `test_da3_eiffel_real_mesh_config.json` is the bounded

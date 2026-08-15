@@ -87,6 +87,70 @@ class ExperimentMetricsTests(unittest.TestCase):
             )
         )
 
+    def test_n_tile_metrics_require_manifest_partition_and_recombine(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch is unavailable")
+
+        with self.assertRaisesRegex(ValueError, "experiment_tile_partition"):
+            TrajectoryMetricsRecorder(
+                planner="magician",
+                scene="joined",
+                start_index=0,
+                capture_dir=".",
+                config={"experiment_tile_metrics_enabled": True},
+                device="cpu",
+            )
+
+        class Cell:
+            def __init__(self, points):
+                self.cell_pts = torch.tensor(points, dtype=torch.float32)
+
+        class Scene:
+            def __init__(self, points):
+                self.cells = {"all": Cell(points)}
+
+        recorder = TrajectoryMetricsRecorder(
+            planner="magician",
+            scene="joined",
+            start_index=0,
+            capture_dir=".",
+            config={
+                "experiment_tile_metrics_enabled": True,
+                "experiment_tile_partition": {
+                    "axis": 0,
+                    "boundaries": [10.0, 20.0],
+                    "tile_ids": ["west", "center", "east"],
+                },
+            },
+            device="cpu",
+        )
+        recorder.record_cross_tile_coverage(
+            gt_scene=Scene([[-1, 0, 0], [5, 0, 0], [15, 0, 0], [25, 0, 0]]),
+            covered_scene=Scene([[-1, 0, 0], [15, 0, 0], [25, 0, 0]]),
+            reconstruction_points=[[-1, 0, 0], [15, 0, 0], [25, 0, 0]],
+            surface_epsilon=0.1,
+            normalization=1.0,
+            global_raw=0.75,
+            global_normalized=0.75,
+        )
+        result = recorder.finalize(
+            X_cam_history=np.array([[0, 0, 0]]),
+            V_cam_history=np.zeros((1, 2)),
+            final_point_count=3,
+        )
+        self.assertNotIn("cross_tile", result)
+        self.assertEqual(
+            result["tile_metrics"]["coverage"][0]["tiles"]["center"][
+                "covered_points"
+            ],
+            1,
+        )
+        self.assertAlmostEqual(
+            result["tile_metrics"]["recombination_max_abs_raw_error"], 0.0
+        )
+
     def test_post_run_gt_diagnostic_is_zero_and_marked_non_feedback(self):
         try:
             import torch
