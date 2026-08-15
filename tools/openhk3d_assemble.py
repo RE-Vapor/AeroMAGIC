@@ -845,6 +845,8 @@ def _run_blender(
     command = [
         blender,
         "--background",
+        "--python-exit-code",
+        "1",
         "--factory-startup",
         "--python",
         str(backend),

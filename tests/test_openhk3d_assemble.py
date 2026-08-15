@@ -1,11 +1,13 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools.openhk3d_assemble import (
     AssemblyError,
     GridCoord,
     SharedTransform,
+    _run_blender,
     _load_raw_tile,
     adjacent_tiles,
     generate_settings,
@@ -13,6 +15,7 @@ from tools.openhk3d_assemble import (
     merge_objects,
     parse_grid_from_obj_name,
 )
+from tools.openhk3d_ray_cast import count_ray_intersections
 
 
 OBJ_TEMPLATE = """mtllib {mtl}\n\
@@ -25,6 +28,40 @@ vt 0 1\n\
 vn 0 0 1\n\
 usemtl wall\n\
 f 1/1/1 2/2/1 3/3/1\n"""
+
+
+class ScalarVector:
+    def __init__(self, value: float):
+        self.value = value
+
+    def copy(self):
+        return ScalarVector(self.value)
+
+    def __add__(self, other):
+        return ScalarVector(self.value + other.value)
+
+    def __sub__(self, other):
+        return ScalarVector(self.value - other.value)
+
+    def __mul__(self, scalar: float):
+        return ScalarVector(self.value * scalar)
+
+    @property
+    def length(self):
+        return abs(self.value)
+
+
+class StickyFaceTree:
+    def __init__(self):
+        self.calls = 0
+
+    def ray_cast(self, origin, _direction):
+        self.calls += 1
+        if self.calls == 1:
+            return ScalarVector(0), None, 7, 1.0
+        if origin.value < 2e-5:
+            return ScalarVector(origin.value + 1e-6), None, 7, 1e-6
+        return None, None, None, None
 
 
 def write_tile(root: Path, name: str, x: int, y: int, x0: float, x1: float, texture: bytes) -> Path:
@@ -41,6 +78,24 @@ def write_tile(root: Path, name: str, x: int, y: int, x0: float, x1: float, text
 
 
 class OpenHK3DAssemblyTests(unittest.TestCase):
+    def test_ray_traversal_counts_a_sticky_face_once(self):
+        tree = StickyFaceTree()
+        intersections = count_ray_intersections(
+            tree,
+            ScalarVector(-1),
+            ScalarVector(1),
+        )
+        self.assertEqual(intersections, 1)
+        self.assertLess(tree.calls, 10)
+
+    @mock.patch("tools.openhk3d_assemble.subprocess.run")
+    def test_blender_python_exceptions_produce_a_nonzero_exit(self, run):
+        run.return_value.returncode = 0
+        with tempfile.TemporaryDirectory() as temporary:
+            _run_blender("blender", Path(temporary), "scene.obj", 0.2)
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--python-exit-code") + 1], "1")
+
     def test_grid_parser_and_adjacency(self):
         self.assertEqual(parse_grid_from_obj_name("Tile_+301_+146.obj"), GridCoord(301, 146))
         with self.assertRaises(AssemblyError):

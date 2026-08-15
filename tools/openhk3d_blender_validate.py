@@ -15,6 +15,9 @@ import bpy
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from openhk3d_ray_cast import count_ray_intersections
+
 
 REQUIRED_OBJ_IMPORT_PROPERTIES = {
     "filepath",
@@ -124,23 +127,12 @@ RAY_DIRECTIONS = [
 ]
 
 
-def ray_intersections(tree: BVHTree, point: Vector, direction: Vector) -> int:
-    count = 0
-    origin = point.copy()
-    epsilon = 1e-6
-    for _ in range(10000):
-        location, _normal, _face_index, _distance = tree.ray_cast(origin, direction)
-        if location is None:
-            break
-        count += 1
-        origin = location + direction * epsilon
-    else:
-        raise RuntimeError("BVH ray exceeded the intersection safety limit")
-    return count
-
-
 def point_inside(tree: BVHTree, point: Vector) -> bool:
-    votes = sum(1 for direction in RAY_DIRECTIONS if ray_intersections(tree, point, direction) % 2 == 1)
+    votes = sum(
+        1
+        for direction in RAY_DIRECTIONS
+        if count_ray_intersections(tree, point, direction) % 2 == 1
+    )
     return votes >= 2
 
 
