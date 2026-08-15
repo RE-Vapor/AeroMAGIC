@@ -17,13 +17,16 @@ recorded in `assembly-manifest.json`, so the coordinate frame never recenters.
 ## Requirements
 
 - The MAGICIAN Python environment, including PyTorch.
-- Blender `>=4.2,<4.3`, callable through an executable path.
+- A stable or LTS Blender build exposing `bpy.ops.wm.obj_import` and
+  `BVHTree.FromPolygons`, callable through an executable path. Blender 5.2 LTS
+  is the current recommended deployment target for this project.
 - Each raw tile directory must contain exactly one `Tile_<x>_<y>.obj`, its MTL
   libraries, and every referenced texture.
 - The base tile or assembled scene must contain a working `settings.json`.
 
-The Blender version is intentionally narrow because the Wavefront importer API
-is part of the validation contract.
+The tool validates the exact OBJ-import properties and BVH constructor it uses
+instead of accepting or rejecting a release by version number alone. The
+manifest records Blender's exact version and build hash for reproducibility.
 
 ## Discover an adjacent tile
 

@@ -1091,7 +1091,11 @@ def build_parser() -> argparse.ArgumentParser:
     assemble_parser.add_argument("--scene-padding", type=float, default=0.05)
     assemble_parser.add_argument("--seam-band", type=float, default=0.5, help="Source-coordinate units")
     assemble_parser.add_argument("--seam-sample-limit", type=int, default=50000)
-    assemble_parser.add_argument("--blender", default="blender", help="Blender 4.2 executable")
+    assemble_parser.add_argument(
+        "--blender",
+        default="blender",
+        help="Stable/LTS Blender executable with the required OBJ and BVH APIs",
+    )
     assemble_parser.add_argument("--occupancy-clearance", type=float, default=0.2)
     assemble_parser.add_argument("--magician-python", default=sys.executable)
     assemble_parser.add_argument("--skip-magician-loader", action="store_true")

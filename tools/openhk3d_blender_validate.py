@@ -16,6 +16,44 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
 
+REQUIRED_OBJ_IMPORT_PROPERTIES = {
+    "filepath",
+    "forward_axis",
+    "up_axis",
+    "use_split_objects",
+    "use_split_groups",
+    "validate_meshes",
+}
+
+
+def require_runtime_capabilities() -> Dict[str, object]:
+    obj_import = getattr(bpy.ops.wm, "obj_import", None)
+    if obj_import is None:
+        raise RuntimeError("Blender does not expose bpy.ops.wm.obj_import")
+    available_properties = {
+        prop.identifier for prop in obj_import.get_rna_type().properties
+    }
+    missing = sorted(REQUIRED_OBJ_IMPORT_PROPERTIES - available_properties)
+    if missing:
+        raise RuntimeError(
+            "Blender OBJ importer is missing required properties: {}".format(
+                ", ".join(missing)
+            )
+        )
+    if not hasattr(BVHTree, "FromPolygons"):
+        raise RuntimeError("Blender does not expose BVHTree.FromPolygons")
+    build_hash = bpy.app.build_hash
+    if isinstance(build_hash, bytes):
+        build_hash = build_hash.decode("ascii", errors="replace")
+    return {
+        "blender_version": bpy.app.version_string,
+        "blender_version_tuple": list(bpy.app.version),
+        "build_hash": build_hash,
+        "obj_import_properties": sorted(REQUIRED_OBJ_IMPORT_PROPERTIES),
+        "bvh_from_polygons": True,
+    }
+
+
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scene-dir", required=True)
@@ -212,11 +250,7 @@ def write_json(path: Path, value: object) -> None:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(blender_arguments() if argv is None else argv)
-    if bpy.app.version[:2] != (4, 2):
-        raise RuntimeError(
-            "This validation contract requires Blender >=4.2,<4.3; found {}"
-            .format(bpy.app.version_string)
-        )
+    runtime_capabilities = require_runtime_capabilities()
     scene_root = Path(args.scene_dir).resolve()
     obj_path = (scene_root / args.obj).resolve()
     if obj_path.parent != scene_root or not obj_path.is_file():
@@ -241,6 +275,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             invalid_starts.append(start)
     report = {
         "status": "passed" if not invalid_starts else "failed",
+        "runtime_capabilities": runtime_capabilities,
         "source_geometry": {
             "vertices": len(vertices),
             "faces": source_faces,
