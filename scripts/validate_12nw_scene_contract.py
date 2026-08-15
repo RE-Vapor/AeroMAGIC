@@ -20,6 +20,7 @@ import trimesh
 
 from macarons.testers.magician_planning import setup_test_camera
 from macarons.utility.macarons_utils import Settings, load_params, load_scene
+from macarons.utility.planning_depth import scene_texture_atlas_size
 from macarons.utility.scene_transform import (
     resolve_scene_mesh_transform,
     transform_scene_vertices,
@@ -80,6 +81,7 @@ def main() -> None:
         str(mesh_path),
         params.scene_scale_factor,
         device,
+        texture_atlas_size=scene_texture_atlas_size(config),
         mesh_transform=transform,
     )
     collision_mesh = trimesh.load(mesh_path, process=False, force="mesh")
@@ -180,6 +182,7 @@ def main() -> None:
         "rasterizer": {
             "backend": "PyTorch3D CUDA MeshRasterizer",
             "device": str(device),
+            "texture_atlas_size": scene_texture_atlas_size(config),
             "torch_version": torch.__version__,
             "cuda_version": torch.version.cuda,
             "rgb_all_finite": bool(torch.isfinite(rgb).all()),

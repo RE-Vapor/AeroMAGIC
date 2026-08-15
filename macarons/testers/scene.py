@@ -11,6 +11,7 @@ from ..utility.planning_depth import (
     create_scene_depth_providers,
     path_is_blocked,
     process_planning_depth_frame,
+    scene_texture_atlas_size,
     set_planning_seeds,
     update_proxy_state,
     validation_uses_occupied_pose,
@@ -649,6 +650,7 @@ def run_test(params_name,
             # Load mesh
             mesh = load_scene(mesh_path, params.scene_scale_factor, device,
                               mirror=mirrored_scene, mirrored_axis=mirrored_axis,
+                              texture_atlas_size=scene_texture_atlas_size(depth_config),
                               mesh_transform=mesh_transform)
             import trimesh
             mesh_for_check = trimesh.load(mesh_path)

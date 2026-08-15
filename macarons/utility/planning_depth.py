@@ -13,6 +13,9 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from .depth_sources import DepthObservation, create_depth_provider
 
 
+DEFAULT_SCENE_TEXTURE_ATLAS_SIZE = 32
+
+
 def _config_dict(config: Any) -> dict:
     if config is None:
         return {}
@@ -110,6 +113,22 @@ def validation_uses_occupied_pose(config: Any) -> bool:
     value = _config_value(config, "validation_use_occupied_pose", True)
     if type(value) is not bool:
         raise ValueError("validation_use_occupied_pose must be a boolean.")
+    return value
+
+
+def scene_texture_atlas_size(config: Any) -> int:
+    """Return the validated per-face texture atlas resolution for scene loading.
+
+    The legacy value remains the default. Large textured meshes can opt into a
+    smaller atlas without changing geometry, camera, collision, or planning
+    parameters, and every planning entry point shares this validation.
+    """
+
+    value = _config_value(
+        config, "scene_texture_atlas_size", DEFAULT_SCENE_TEXTURE_ATLAS_SIZE
+    )
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("scene_texture_atlas_size must be an integer >= 1.")
     return value
 
 

@@ -27,6 +27,7 @@ Below is a detailed description of all the hyperparameters involved in evaluatin
 | `validation_memory_dir_name` | str | Optional plain directory name that isolates validation captures from production/test memories. Paths and traversal components are rejected. |
 | `validation_n_gt_surface_points` / `validation_n_proxy_points` | int | Optional short-run capacity overrides. Omit them to retain the training configuration. |
 | `scene_mesh_transforms` | object | Optional per-scene exporter/world-coordinate adaptation. Each entry may specify an axis permutation, axis signs, translation, and positive preprocessing scale. Missing scenes use the identity transform. |
+| `scene_texture_atlas_size` | int | Optional positive per-face texture atlas resolution used by both planning entry points and the real-scene CUDA gate. Defaults to the legacy value `32`; large textured meshes can lower it to bound loader memory without changing geometry or planning settings. |
 | `validation_use_occupied_pose` | bool | Defaults to `true`. Set `false` only for a validated custom scene without `occupied_pose.pt`; mesh collision checks remain independent. |
 
 Depth-source selection is intentionally strict. With `use_perfect_depth_map=true`,

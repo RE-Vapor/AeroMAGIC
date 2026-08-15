@@ -10,6 +10,7 @@ from macarons.utility.planning_depth import (
     create_scene_depth_providers,
     path_is_blocked,
     process_planning_depth_frame,
+    scene_texture_atlas_size,
     set_planning_seeds,
     update_proxy_state,
     validation_uses_occupied_pose,
@@ -70,6 +71,22 @@ class PlanningValidationLimitTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "validation_use_occupied_pose"):
             validation_uses_occupied_pose({"validation_use_occupied_pose": 0})
+
+    def test_scene_texture_atlas_size_preserves_legacy_default_and_validates_override(self):
+        self.assertEqual(scene_texture_atlas_size({}), 32)
+        self.assertEqual(scene_texture_atlas_size({"scene_texture_atlas_size": 16}), 16)
+        self.assertEqual(
+            scene_texture_atlas_size(
+                SimpleNamespace(scene_texture_atlas_size=8)
+            ),
+            8,
+        )
+        for invalid in (True, 0, -1, 1.5, "16"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "scene_texture_atlas_size"):
+                    scene_texture_atlas_size(
+                        {"scene_texture_atlas_size": invalid}
+                    )
 
     def test_applies_only_allowlisted_experiment_mapping_overrides(self):
         params = SimpleNamespace(gathering_factor=0.05, carving_tolerance=10.0)
