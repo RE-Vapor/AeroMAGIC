@@ -43,10 +43,17 @@ def main() -> None:
         renderer_depth = capture["zbuf"]
         finite_depth = torch.isfinite(renderer_depth) & capture["mask"]
         renderer_depth_finite_pixels = int(finite_depth.sum())
+        finite_depth_values = renderer_depth[finite_depth]
+        renderer_depth_stats = {
+            "min": float(finite_depth_values.min()),
+            "max": float(finite_depth_values.max()),
+            "mean": float(finite_depth_values.mean()),
+        }
     except (ImportError, FileNotFoundError, KeyError, RuntimeError) as error:
         rgb_finite = False
         renderer_mask_pixels = 0
         renderer_depth_finite_pixels = 0
+        renderer_depth_stats = {"min": None, "max": None, "mean": None}
         capture_error = repr(error)
     else:
         capture_error = None
@@ -91,18 +98,39 @@ def main() -> None:
             ],
             "occupied": manifest["start_occupied"],
         },
+        "asset_hashes": manifest["source_hashes"],
         "depth": {
             "planning_pixels": frame["planning_pixels"],
             "valid_pixels": frame["valid_pixels"],
             "scene_units": depth_stats,
             "renderer_mask_pixels": renderer_mask_pixels,
             "renderer_finite_depth_pixels": renderer_depth_finite_pixels,
+            "renderer_depth_scene_units": renderer_depth_stats,
             "rgb_finite": rgb_finite,
             "capture_error": capture_error,
         },
         "seam_segment_collision": seam_collision,
         "candidate_summary": planning["candidate_summary"],
     }
+    baseline_gate_path = Path(manifest["baseline_config"]).parent / "scene_gate.json"
+    if baseline_gate_path.exists():
+        baseline_gate = json.loads(baseline_gate_path.read_text(encoding="utf-8"))
+        result["bounds"] = {
+            "camera_scene_units": baseline_gate["camera"]["bounds_scene_units"],
+            "renderer_scene_units": baseline_gate["mesh"][
+                "renderer_bounds_scene_units"
+            ],
+            "collision_scene_units": baseline_gate["mesh"][
+                "collision_bounds_scene_units"
+            ],
+            "coverage_reference_scene_units": baseline_gate["coverage_reference"][
+                "bounds_scene_units"
+            ],
+            "reuse_basis": (
+                "identical source hashes, identity transform, scene scale, and atlas "
+                "as the accepted MYL-40 scene gate"
+            ),
+        }
     output = Path(args.output)
     _write_json(output, result)
     print(output)
