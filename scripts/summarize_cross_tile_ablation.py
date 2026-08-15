@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize MYL-41 S/T runs and render evidence-rich previews."""
+"""Summarize S/T cross-tile runs and render evidence-rich previews."""
 
 from __future__ import annotations
 
@@ -268,7 +268,11 @@ def _rgb_frame(capture_dir: str, frame_id: int):
 
 
 def _render_run_preview(
-    label: str, metrics: Mapping[str, Any], checks: Mapping[str, bool], output: Path
+    issue: str,
+    label: str,
+    metrics: Mapping[str, Any],
+    checks: Mapping[str, bool],
+    output: Path,
 ) -> None:
     import matplotlib
 
@@ -343,7 +347,7 @@ def _render_run_preview(
     axis.axis("off")
     summary = metrics["cross_tile"]["trajectory_summary"]
     lines = [
-        f"MYL-41 {label} | observations={metrics['trajectory']['observation_count']} | "
+        f"{issue} {label} | observations={metrics['trajectory']['observation_count']} | "
         f"first_crossing={summary['first_crossing_frame']} | tile2_obs={summary['tile_2_observations']} | "
         f"longest_tile2_stay={summary['tile_2_longest_consecutive_stay']}",
         f"tile2 normalized coverage delta={summary['tile_2_normalized_coverage_delta']:.4f} | "
@@ -457,8 +461,20 @@ def main() -> None:
         "interpretation_matrix_conclusion": conclusion,
     }
     _write_json(output / "summary.json", result)
-    _render_run_preview("S", s_metrics, s_checks, output / "S_comprehensive_preview.png")
-    _render_run_preview("T", t_metrics, t_checks, output / "T_comprehensive_preview.png")
+    _render_run_preview(
+        args.issue,
+        "S",
+        s_metrics,
+        s_checks,
+        output / "S_comprehensive_preview.png",
+    )
+    _render_run_preview(
+        args.issue,
+        "T",
+        t_metrics,
+        t_checks,
+        output / "T_comprehensive_preview.png",
+    )
     _render_comparison(
         {"MYL-40": myl40, "S": s_metrics, "T": t_metrics},
         conclusion,
