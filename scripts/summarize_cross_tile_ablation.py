@@ -7,6 +7,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import textwrap
 from typing import Any, Mapping
 
 import numpy as np
@@ -370,14 +371,21 @@ def _render_comparison(
     axes[1].set(title="Tile-2 normalized coverage", xlabel="frame")
     axes[1].legend()
     axes[2].axis("off")
-    axes[2].text(0, 1, conclusion, va="top", wrap=True, fontsize=12)
-    for row, label in enumerate(("MYL-40", "S", "T"), start=1):
+    axes[2].text(
+        0,
+        1,
+        "\n".join(textwrap.wrap(conclusion, width=58)),
+        va="top",
+        fontsize=9,
+    )
+    row_y = {"MYL-40": 0.43, "S": 0.25, "T": 0.07}
+    for label in ("MYL-40", "S", "T"):
         metrics = runs[label]
         positions = np.asarray(metrics["trajectory"]["positions"])
         tile_2_count = int(np.sum(positions[:, 0] > 75.0))
         axes[2].text(
             0,
-            1 - 0.18 * row,
+            row_y[label],
             f"{label}: obs={len(positions)}, tile2_obs={tile_2_count}, "
             f"x=[{positions[:, 0].min():.1f}, {positions[:, 0].max():.1f}]",
             va="top",
