@@ -194,7 +194,7 @@ def _rgb_frame(capture_dir: str, frame_id: int):
     import torch
 
     frame = torch.load(
-        Path(capture_dir) / "frames" / f"{frame_id}.pt",
+        Path(capture_dir) / f"{frame_id}.pt",
         map_location="cpu",
         weights_only=False,
     )

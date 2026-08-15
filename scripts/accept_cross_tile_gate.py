@@ -34,7 +34,7 @@ def main() -> None:
         import torch
 
         capture = torch.load(
-            Path(metrics["capture_dir"]) / "frames" / "0.pt",
+            Path(metrics["capture_dir"]) / "0.pt",
             map_location="cpu",
             weights_only=False,
         )
