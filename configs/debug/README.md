@@ -9,6 +9,7 @@ settings in that base config.
 | `quick` | 100,000 | 3 x 3 | 1 | 3 | 1 | Fast logic and wiring check |
 | `magician` | 200,000 | 5 x 5 | 1 | 11 | 1 | Moderate MAGICIAN-style debug run |
 | `large-scene` | 200,000 | 3 x 3 | 1 | 21 | 1 | Longer traversal with bounded branching |
+| `pioneer-20` | 100,000 | 3 x 3 | 1 | 20 | 1 | Twenty-observation PIONEER traversal |
 | `pioneer-50` | 100,000 | 3 x 3 | 1 | 50 | 1 | Long PIONEER traversal with quick compute bounds |
 
 All profiles fix `random_seed=8` and `torch_seed=9`. They also set

@@ -1,0 +1,18 @@
+{
+  "name": "pioneer-20",
+  "description": "Twenty-observation PIONEER traversal with 100k proxies and bounded 3 x 3 beam search.",
+  "debug_only": true,
+  "coverage_comparable": false,
+  "output_suffix": "debug_pioneer20",
+  "overrides": {
+    "validation_n_proxy_points": 100000,
+    "beam_width": 3,
+    "beam_steps": 3,
+    "validation_n_interpolation_steps": 1,
+    "validation_n_poses_in_trajectory": 19,
+    "experiment_budget_observations": 20,
+    "validation_max_start_positions": 1,
+    "random_seed": 8,
+    "torch_seed": 9
+  }
+}

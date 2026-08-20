@@ -497,7 +497,11 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
             self.assertFalse(record["pioneer"]["cubemap6_metrics_verified"])
 
     def test_pass_conclusion_is_neutral_across_observation_budgets(self):
-        for budget, debug_profile in ((3, "quick"), (50, "pioneer-50")):
+        for budget, debug_profile in (
+            (3, "quick"),
+            (20, "pioneer-20"),
+            (50, "pioneer-50"),
+        ):
             with self.subTest(budget=budget), tempfile.TemporaryDirectory() as temporary:
                 registry_json, registry_md, run_dir, online = self._fixture(temporary)
                 config_path = run_dir / "config.json"

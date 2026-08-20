@@ -20,6 +20,7 @@ class DebugProfileTests(unittest.TestCase):
             "quick": (100000, 3, 3, 3),
             "magician": (200000, 5, 5, 11),
             "large-scene": (200000, 3, 3, 21),
+            "pioneer-20": (100000, 3, 3, 20),
             "pioneer-50": (100000, 3, 3, 50),
         }
         for name in DEBUG_PROFILE_NAMES:
@@ -121,6 +122,36 @@ class DebugProfileTests(unittest.TestCase):
         )
         self.assertTrue(
             config["experiment_metrics_dir"].endswith("metrics_debug_pioneer50")
+        )
+
+    def test_pioneer_20_profile_resolves_exact_requested_budget(self):
+        config_path = (
+            ROOT
+            / "configs"
+            / "test"
+            / "test_pioneer_hkust_pan11_position_only_20obs_a1_config.json"
+        )
+        with config_path.open(encoding="utf-8") as stream:
+            config = json.load(stream)
+        profile = apply_debug_profile(
+            config,
+            cli_profile_name="pioneer-20",
+            profiles_dir=str(PROFILES_DIR),
+        )
+        self.assertEqual(profile["name"], "pioneer-20")
+        self.assertEqual(config["validation_n_poses_in_trajectory"], 19)
+        self.assertEqual(config["validation_n_interpolation_steps"], 1)
+        self.assertEqual(config["experiment_budget_observations"], 20)
+        self.assertEqual(config["validation_n_proxy_points"], 100000)
+        self.assertEqual(config["beam_width"], 3)
+        self.assertEqual(config["beam_steps"], 3)
+        self.assertEqual(config["validation_max_start_positions"], 1)
+        self.assertTrue(config["lmdb_dir_name"].endswith("_debug_pioneer20"))
+        self.assertTrue(
+            config["validation_memory_dir_name"].endswith("_debug_pioneer20")
+        )
+        self.assertTrue(
+            config["experiment_metrics_dir"].endswith("metrics_debug_pioneer20")
         )
 
 

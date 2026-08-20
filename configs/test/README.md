@@ -28,7 +28,7 @@ Below is a detailed description of all the hyperparameters involved in evaluatin
 | `validation_memory_dir_name` | str | Optional plain directory name that isolates validation captures from production/test memories. Paths and traversal components are rejected. |
 | `experiment_run_dir` | str | Optional runner guard that pins one attempt config to its intended run directory. `run_pioneer_tmux.sh` rejects a different `RUN_DIR`, preventing retry attempts from reusing the previous attempt's memory, LMDB, or metrics namespace. |
 | `validation_n_gt_surface_points` / `validation_n_proxy_points` | int | Optional short-run capacity overrides. Omit them to retain the training configuration. |
-| `debug_profile` | str | Optional compute-only overlay: `quick`, `magician`, `large-scene`, or `pioneer-50`. Equivalent to the CLI `--debug-profile` selector. See `configs/debug/README.md`. |
+| `debug_profile` | str | Optional compute-only overlay: `quick`, `magician`, `large-scene`, `pioneer-20`, or `pioneer-50`. Equivalent to the CLI `--debug-profile` selector. See `configs/debug/README.md`. |
 | `planning_observation_mode` | str | `single` preserves the legacy perspective observation. `cubemap6` selects one PIONEER bundle containing `front/back/left/right/up/down` square faces at a shared optical centre. |
 | `pioneer_face_size` | int | Square pixel dimension of each PIONEER face; must be at least `16`. |
 | `pioneer_face_fov_degrees` | float | Must be exactly `90.0` for gap-free cubemap coverage. |
