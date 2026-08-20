@@ -588,10 +588,21 @@ def build_record(
     real_face_render_count = _as_int(pioneer.get("real_face_render_count"))
     bundles = pioneer.get("bundles")
     expected_face_names = ("front", "back", "left", "right", "up", "down")
+    bundle_ids = (
+        [
+            _as_int(bundle.get("bundle_id"))
+            if isinstance(bundle, Mapping)
+            else None
+            for bundle in bundles
+        ]
+        if isinstance(bundles, list)
+        else []
+    )
     bundle_rows_verified = (
         isinstance(bundles, list)
         and bundle_count is not None
         and len(bundles) == bundle_count
+        and bundle_ids == list(range(bundle_count))
         and all(
             isinstance(bundle, Mapping)
             and _as_int(bundle.get("face_count")) == 6

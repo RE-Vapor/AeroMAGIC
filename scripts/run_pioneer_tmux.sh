@@ -60,7 +60,7 @@ verify_run_snapshot() {
       printf 'scene calibration snapshot changed after manifest creation\n' >&2
       return 2
     fi
-    "$python_bin" -c '
+    if ! "$python_bin" -c '
 import hashlib, json, sys
 from pathlib import Path
 payload = json.loads(sys.argv[1])
@@ -89,7 +89,9 @@ for item in sorted(texture_items, key=lambda value: value["path"]):
 if not texture_items or texture_tree.hexdigest() != expected_texture_tree:
     raise SystemExit("scene material/texture tree changed after manifest creation")
 ' "$(manifest_value "$manifest_path" scene_asset_provenance_json)" \
-  "$(manifest_value "$manifest_path" scene_texture_tree_sha256)"
+  "$(manifest_value "$manifest_path" scene_texture_tree_sha256)"; then
+      return 2
+    fi
     expected_tree="$(manifest_value "$manifest_path" da3_source_tree_sha256)"
     probe="$(
       HF_HOME="$(manifest_value "$manifest_path" hf_home)" HF_HUB_OFFLINE=1 \

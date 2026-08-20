@@ -196,6 +196,15 @@ class RunPioneerTmuxTests(unittest.TestCase):
             directory.mkdir(parents=True, exist_ok=True)
         shutil.copy2(RUNNER, runner)
         shutil.copy2(DA3_BOOTSTRAP, da3_bootstrap)
+        fake_entrypoint = repo_dir / "test_magician_planning.py"
+        fake_entrypoint.write_text(
+            "import os\n"
+            "from pathlib import Path\n"
+            "target = os.environ.get('PIONEER_TEST_TAMPER_ASSET')\n"
+            "if target:\n"
+            "    Path(target).write_bytes(b'tampered-during-run')\n",
+            encoding="utf-8",
+        )
 
         profile = {
             "name": "pioneer-50",
@@ -360,6 +369,7 @@ class RunPioneerTmuxTests(unittest.TestCase):
                 "--",
                 "scripts/run_pioneer_tmux.sh",
                 "scripts/run_with_da3_overlay.py",
+                "test_magician_planning.py",
                 "configs/debug/pioneer-50.json",
                 "configs/test/derived.json",
                 "configs/test/mismatch.json",
@@ -406,7 +416,8 @@ class RunPioneerTmuxTests(unittest.TestCase):
         )
         model_snapshot.mkdir(parents=True)
         (model_snapshot / "config.json").write_bytes(b"model-config")
-        (model_snapshot / "model.safetensors").write_bytes(b"model-weights")
+        model_weights = model_snapshot / "model.safetensors"
+        model_weights.write_bytes(b"model-weights")
         da3_package = overlay_source / "depth_anything_3"
         da3_package.mkdir()
         for relative_path, payload in source_files.items():
@@ -520,6 +531,53 @@ class RunPioneerTmuxTests(unittest.TestCase):
         self.assertIn(str(derived_run_dir / "config.json"), manifest["command"])
         self.assertIn("--debug-profiles-dir", manifest["command"])
         self.assertIn("--macarons-params-path", manifest["command"])
+
+        inner_environment = environment.copy()
+        inner_environment.update(
+            {
+                "PIONEER_ENFORCE_RUN_SNAPSHOT": "1",
+                "PIONEER_USE_DA3": "1",
+                "HF_HOME": str(hf_home),
+                "HF_HUB_OFFLINE": "1",
+                "MAGICIAN_DA3_APPEND_PATHS": environment[
+                    "PIONEER_DA3_APPEND_PATHS"
+                ],
+                "PIONEER_TEST_TAMPER_ASSET": str(model_weights),
+            }
+        )
+        tampered = subprocess.run(
+            [
+                "bash",
+                str(runner),
+                "--inside-tmux",
+                "0",
+                str(derived_run_dir),
+                sys.executable,
+                "derived.json",
+                "pioneer-50",
+                str(repo_dir),
+            ],
+            cwd=repo_dir,
+            env=inner_environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(tampered.returncode, 2, tampered.stdout + tampered.stderr)
+        status = dict(
+            line.split("=", 1)
+            for line in (derived_run_dir / "status.txt")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
+        self.assertEqual(status["snapshot_integrity_preflight"], "PASS")
+        self.assertEqual(status["snapshot_integrity_postflight"], "FAIL")
+        self.assertEqual(status["exit_code"], "2")
+        self.assertIn(
+            "runtime asset changed after manifest creation: da3_model_weights",
+            tampered.stdout + tampered.stderr,
+        )
+        model_weights.write_bytes(b"model-weights")
 
         tmux_log.write_text("", encoding="utf-8")
         mismatch_run_dir = root / "artifacts" / "mismatch"

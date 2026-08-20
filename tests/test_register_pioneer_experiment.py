@@ -775,6 +775,21 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
             self.assertEqual(missing_transaction["status"], "UNKNOWN")
             marker_path.write_bytes(marker_bytes)
 
+            metrics["pioneer_observation"]["bundles"][1]["bundle_id"] = 0
+            _write_json(online, metrics)
+            duplicate_bundle_id = register_experiment(
+                experiment_id=(
+                    "PAN-11-PIONEER-EIFFEL-POSITION-ONLY-DA3-DUPLICATE-BUNDLE-ID"
+                ),
+                **kwargs,
+            )
+            self.assertEqual(duplicate_bundle_id["status"], "UNKNOWN")
+            self.assertFalse(
+                duplicate_bundle_id["pioneer"]["cubemap6_metrics_verified"]
+            )
+            metrics["pioneer_observation"]["bundles"][1]["bundle_id"] = 1
+            _write_json(online, metrics)
+
             metrics["pioneer_observation"]["bundles"][1]["depth_faces"][5][
                 "depth_source"
             ] = "GT"
