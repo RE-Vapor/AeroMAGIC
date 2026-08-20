@@ -257,6 +257,7 @@ def _artifact_set(
     online_metrics: Path,
     config_path: Optional[Path],
     metrics: Mapping[str, Any],
+    explicit_artifact_roots: Sequence[Path],
     registry_paths: set[Path],
 ) -> tuple[str, Mapping[str, Any]]:
     artifact_id = "ART-{}-LIVE".format(
@@ -264,7 +265,7 @@ def _artifact_set(
     )
     artifacts: dict[str, Any] = {}
     used_keys: set[str] = set()
-    artifact_roots: list[Path] = []
+    artifact_roots = list(explicit_artifact_roots)
     capture_dir = metrics.get("capture_dir")
     if isinstance(capture_dir, str) and capture_dir.strip():
         artifact_roots.append(Path(capture_dir.strip()))
@@ -796,6 +797,7 @@ def register_experiment(
     scientific_run_commit: str,
     final_branch_commit: str,
     status: str,
+    artifact_roots: Sequence[Path] = (),
 ) -> Mapping[str, Any]:
     registry = _read_json(registry_json)
     if registry is None:
@@ -824,6 +826,7 @@ def register_experiment(
         online_metrics=online_metrics,
         config_path=config_path,
         metrics=metrics_document,
+        explicit_artifact_roots=artifact_roots,
         registry_paths=excluded,
     )
     record = build_record(
@@ -882,6 +885,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--scientific-run-commit", required=True)
     parser.add_argument("--final-branch-commit", required=True)
     parser.add_argument("--status", required=True)
+    parser.add_argument(
+        "--artifact-root",
+        action="append",
+        default=[],
+        type=Path,
+        help="Additional file or directory tree whose artifact bytes must be hashed.",
+    )
     return parser
 
 
@@ -896,6 +906,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         scientific_run_commit=args.scientific_run_commit,
         final_branch_commit=args.final_branch_commit,
         status=args.status,
+        artifact_roots=[path.resolve() for path in args.artifact_root],
     )
     print(
         json.dumps(

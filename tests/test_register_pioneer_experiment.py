@@ -153,6 +153,9 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
     def test_append_hash_and_same_id_update_are_idempotent(self):
         with tempfile.TemporaryDirectory() as temporary:
             registry_json, registry_md, run_dir, online = self._fixture(temporary)
+            lmdb_dir = Path(temporary) / "lmdb"
+            lmdb_dir.mkdir()
+            (lmdb_dir / "data.mdb").write_bytes(b"lmdb-bytes")
             kwargs = {
                 "registry_json": registry_json,
                 "registry_md": registry_md,
@@ -162,6 +165,7 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
                 "scientific_run_commit": BASE_COMMIT,
                 "final_branch_commit": FINAL_COMMIT,
                 "status": "PASS",
+                "artifact_roots": [lmdb_dir],
             }
             first = register_experiment(**kwargs)
             self.assertEqual(first["status"], "PASS")
@@ -193,6 +197,16 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
             self.assertEqual(
                 capture_artifacts[0]["sha256"],
                 hashlib.sha256(b"six-face-capture").hexdigest(),
+            )
+            lmdb_artifacts = [
+                artifact
+                for artifact in artifact_set["artifacts"].values()
+                if artifact["path"] == str((lmdb_dir / "data.mdb").resolve())
+            ]
+            self.assertEqual(len(lmdb_artifacts), 1)
+            self.assertEqual(
+                lmdb_artifacts[0]["sha256"],
+                hashlib.sha256(b"lmdb-bytes").hexdigest(),
             )
             normalized = first["provenance"]["normalized_config"]
             expected_semantic_hash = hashlib.sha256(
