@@ -2,6 +2,7 @@ import os
 import sys
 import gc
 import shutil
+import time
 from ..utility.macarons_utils import *
 from ..utility.utils import count_parameters
 from ..utility.gaussian_utils import CamerasWrapper, convert_camera_from_pytorch3d_to_gs
@@ -31,10 +32,22 @@ from ..utility.huge_3dgs_adapter import (
     create_scene_rgb_providers,
 )
 from ..utility.planning_observations import (
+    CUBEMAP_BODY_EXTRINSICS_VERSION,
+    CUBEMAP_RIG_FRAME_BODY,
+    CUBEMAP_RIG_FRAME_WORLD,
+    CUBEMAP_WORLD_EXTRINSICS_VERSION,
     build_cubemap_cameras,
     capture_cubemap_observation,
     process_cubemap_observation,
     visible_union_from_depth_maps,
+)
+from ..utility.position_only_planning import (
+    PositionOnlyPlannerState,
+    PositionOnlySpec,
+    pose_index_to_xyz,
+    position_neighbors,
+    position_only_structure_audit,
+    xyz_to_canonical_pose_index,
 )
 import trimesh
 import lmdb
@@ -192,6 +205,73 @@ def _uses_pioneer_observation(params):
     return mode == "cubemap6"
 
 
+def _pioneer_planner_state_mode(params):
+    mode = getattr(params, "pioneer_planner_state_mode", "legacy_pose5d")
+    if mode not in {"legacy_pose5d", "position_only"}:
+        raise ValueError(
+            "pioneer_planner_state_mode must be 'legacy_pose5d' or "
+            "'position_only'."
+        )
+    if mode == "position_only" and not _uses_pioneer_observation(params):
+        raise ValueError(
+            "position_only planner state requires planning_observation_mode="
+            "cubemap6."
+        )
+    return mode
+
+
+def _pioneer_rig_frame(params):
+    default = (
+        CUBEMAP_RIG_FRAME_WORLD
+        if _pioneer_planner_state_mode(params) == "position_only"
+        else CUBEMAP_RIG_FRAME_BODY
+    )
+    rig_frame = getattr(params, "pioneer_cubemap_rig_frame", None) or default
+    if rig_frame not in {CUBEMAP_RIG_FRAME_BODY, CUBEMAP_RIG_FRAME_WORLD}:
+        raise ValueError("pioneer_cubemap_rig_frame must be 'body' or 'world'.")
+    if (
+        _pioneer_planner_state_mode(params) == "position_only"
+        and rig_frame != CUBEMAP_RIG_FRAME_WORLD
+    ):
+        raise ValueError("position_only planner state requires a world cubemap rig.")
+    return rig_frame
+
+
+def _pioneer_extrinsics_version(params):
+    rig_frame = _pioneer_rig_frame(params)
+    expected = (
+        CUBEMAP_WORLD_EXTRINSICS_VERSION
+        if rig_frame == CUBEMAP_RIG_FRAME_WORLD
+        else CUBEMAP_BODY_EXTRINSICS_VERSION
+    )
+    configured = (
+        getattr(params, "pioneer_cubemap_extrinsics_version", None) or expected
+    )
+    if configured != expected:
+        raise ValueError(
+            "pioneer_cubemap_extrinsics_version does not match the selected "
+            f"rig frame; expected {expected!r}."
+        )
+    return expected
+
+
+def _position_only_spec(camera, params):
+    canonical = getattr(params, "pioneer_canonical_orientation_indices", None)
+    if canonical is None:
+        raise ValueError(
+            "position_only requires pioneer_canonical_orientation_indices."
+        )
+    if not isinstance(canonical, (list, tuple)) or len(canonical) != 2:
+        raise ValueError(
+            "pioneer_canonical_orientation_indices must contain two integers."
+        )
+    return PositionOnlySpec(
+        position_shape=(camera.pose_l, camera.pose_w, camera.pose_h),
+        orientation_shape=(camera.pose_n_elev, camera.pose_n_azim),
+        canonical_orientation_index=tuple(canonical),
+    )
+
+
 def _capture_planner_observation(camera, mesh, rgb_provider, params):
     if not _uses_pioneer_observation(params):
         return capture_planning_observation(camera, mesh, rgb_provider)
@@ -205,6 +285,7 @@ def _capture_planner_observation(camera, mesh, rgb_provider, params):
         face_size=int(getattr(params, "pioneer_face_size", 256)),
         ambient_light_intensity=float(params.ambient_light_intensity),
         rgb_provider=rgb_provider,
+        rig_frame=_pioneer_rig_frame(params),
     )
     camera.last_observation_bundle = bundle
     return bundle
@@ -241,6 +322,7 @@ def _render_pioneer_gaussian_visibility(
         zfar=float(camera.zfar),
         device=device,
         reference_camera=reference_camera,
+        rig_frame=_pioneer_rig_frame(params),
     )
     depth_maps = {}
     for face_name, face_camera in face_cameras.items():
@@ -491,12 +573,55 @@ def setup_test_camera(params,
                     mirrored_axis=mirrored_axis)  # Change or remove this path during inference or test
 
 
-    # Select a random, valid camera pose as starting pose
-    camera.initialize_camera(start_cam_idx=start_cam_idx)
-
-    # Capture one planner observation.  In PIONEER mode this is one six-face
-    # bundle and advances the observation counter once, not six times.
-    _capture_planner_observation(camera, mesh, rgb_provider, params)
+    state_mode = _pioneer_planner_state_mode(params)
+    pioneer_observation = _uses_pioneer_observation(params)
+    if state_mode == "position_only":
+        spec = _position_only_spec(camera, params)
+        planner_state = PositionOnlyPlannerState(spec)
+        start_pose_idx = torch.as_tensor(
+            start_cam_idx, dtype=torch.long, device=camera.device
+        )
+        start_state_idx = pose_index_to_xyz(start_pose_idx)
+        canonical_start_idx = xyz_to_canonical_pose_index(start_state_idx, spec)
+        camera.pioneer_position_spec = spec
+        camera.pioneer_planner_state = planner_state
+        camera.pioneer_state_index_history = torch.zeros(
+            0, 3, dtype=torch.long, device=camera.device
+        )
+        camera.initialize_camera(start_cam_idx=canonical_start_idx)
+        planner_state.capture_and_commit(
+            start_state_idx,
+            _capture_planner_observation,
+            camera,
+            mesh,
+            rgb_provider,
+            params,
+        )
+        camera.pioneer_state_index_history = torch.vstack(
+            (camera.pioneer_state_index_history, start_state_idx.reshape(1, 3))
+        )
+        print(
+            "PIONEER planner contract: state=position_only dim=3 "
+            f"canonical_orientation={list(spec.canonical_orientation_index)} "
+            f"rig={_pioneer_rig_frame(params)} "
+            f"extrinsics={_pioneer_extrinsics_version(params)}"
+        )
+        print("PIONEER action branches: legacy_raw=10 pan10_effective=6 position_only=6 orientation=0")
+        print("PIONEER structure audit:", dict(position_only_structure_audit(spec)))
+    elif pioneer_observation:
+        # Legacy Camera owns a five-dimensional pose graph and records visits
+        # as soon as it moves.  This path is retained only for controlled A/B
+        # comparison and backwards compatibility.
+        camera.initialize_camera(start_cam_idx=start_cam_idx)
+        _capture_planner_observation(camera, mesh, rgb_provider, params)
+        print(
+            "PIONEER planner contract: state=legacy_pose5d dim=5 "
+            f"rig={_pioneer_rig_frame(params)} "
+            f"extrinsics={_pioneer_extrinsics_version(params)}"
+        )
+    else:
+        camera.initialize_camera(start_cam_idx=start_cam_idx)
+        _capture_planner_observation(camera, mesh, rgb_provider, params)
 
     return camera
 
@@ -522,6 +647,26 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
     coverage_evolution = []
     pose_i = 0
     pioneer_observation = _uses_pioneer_observation(params)
+    pioneer_state_mode = _pioneer_planner_state_mode(params)
+    position_only = pioneer_state_mode == "position_only"
+    position_spec = getattr(camera, "pioneer_position_spec", None)
+    position_state = getattr(camera, "pioneer_planner_state", None)
+    if position_only and (
+        not isinstance(position_spec, PositionOnlySpec)
+        or not isinstance(position_state, PositionOnlyPlannerState)
+    ):
+        raise RuntimeError(
+            "position_only camera is missing its planner spec/observation state."
+        )
+
+    def camera_pose_index(planner_state_index):
+        if position_only:
+            return xyz_to_canonical_pose_index(planner_state_index, position_spec)
+        return planner_state_index
+
+    def camera_pose_from_state(planner_state_index):
+        return camera.get_pose_from_idx(camera_pose_index(planner_state_index))
+
     K_matrix = None
     
     def process_current_frame():
@@ -783,7 +928,9 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
         print(f"Beam search remain: {remaining_steps} steps")
 
         # initialize beam search
-        initial_pose_idx = camera.cam_idx
+        initial_pose_idx = (
+            pose_index_to_xyz(camera.cam_idx) if position_only else camera.cam_idx
+        )
         beams = [{
             'trajectory': [],
             'novelty_values': novelty_values.clone(),
@@ -798,6 +945,21 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
             print(f"Beam search step {bs_i + 1}/{params.beam_steps}")
 
             all_candidates = []
+            search_step_started = time.perf_counter()
+            search_step_metrics = {
+                "planning_iteration": pose_i,
+                "beam_step": bs_i,
+                "parent_beam_count": 0,
+                "raw_action_proposal_count": 0,
+                "translation_action_proposal_count": 0,
+                "orientation_action_proposal_count": 0,
+                "generated_candidate_count": 0,
+                "valid_state_candidate_count": 0,
+                "observed_rejected_candidate_count": 0,
+                "collision_rejected_candidate_count": 0,
+                "rendered_candidate_count": 0,
+                "retained_beam_count": 0,
+            }
             step_diagnostic = None
             if cross_tile_enabled:
                 step_diagnostic = {
@@ -813,32 +975,109 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
 
             # extend to every beams
             for beam_index, beam in enumerate(beams):
-                neighbor_indices = camera.get_neighboring_poses(pose_idx=beam['current_pose_idx'])
-                if pioneer_observation and getattr(
-                    params, "pioneer_remove_rotation_only_candidates", True
-                ):
-                    translated = torch.any(
-                        neighbor_indices[:, :3]
-                        != beam["current_pose_idx"][:3].view(1, 3),
-                        dim=1,
+                search_step_metrics["parent_beam_count"] += 1
+                if position_only:
+                    search_step_metrics["raw_action_proposal_count"] += 6
+                    search_step_metrics["translation_action_proposal_count"] += 6
+                    neighbor_indices = position_neighbors(
+                        beam["current_pose_idx"], position_spec
                     )
-                    neighbor_indices = neighbor_indices[translated]
-                valid_neighbors = camera.get_valid_neighbors(neighbor_indices=neighbor_indices, mesh=mesh)
+                    valid_neighbors = position_state.valid_neighbors(
+                        beam["current_pose_idx"]
+                    )
+                    observed_rejected = (
+                        len(neighbor_indices) - len(valid_neighbors)
+                        if any(
+                            not position_state.is_observed(row)
+                            for row in neighbor_indices
+                        )
+                        else 0
+                    )
+                else:
+                    search_step_metrics["raw_action_proposal_count"] += 10
+                    search_step_metrics["translation_action_proposal_count"] += 6
+                    search_step_metrics["orientation_action_proposal_count"] += 4
+                    neighbor_indices = camera.get_neighboring_poses(
+                        pose_idx=beam['current_pose_idx']
+                    )
+                    if pioneer_observation and getattr(
+                        params, "pioneer_remove_rotation_only_candidates", True
+                    ):
+                        translated = torch.any(
+                            neighbor_indices[:, :3]
+                            != beam["current_pose_idx"][:3].view(1, 3),
+                            dim=1,
+                        )
+                        neighbor_indices = neighbor_indices[translated]
+                    visited_flags = [
+                        camera.get_pose_from_idx(row)[1] for row in neighbor_indices
+                    ]
+                    valid_neighbors = camera.get_valid_neighbors(
+                        neighbor_indices=neighbor_indices, mesh=mesh
+                    )
+                    observed_rejected = (
+                        sum(bool(value) for value in visited_flags)
+                        if any(not bool(value) for value in visited_flags)
+                        else 0
+                    )
+                search_step_metrics["generated_candidate_count"] += len(
+                    neighbor_indices
+                )
+                search_step_metrics["valid_state_candidate_count"] += len(
+                    valid_neighbors
+                )
+                search_step_metrics["observed_rejected_candidate_count"] += int(
+                    observed_rejected
+                )
 
                 if cross_tile_enabled:
                     parent_pose_index = [
                         int(value) for value in beam['current_pose_idx'].cpu().tolist()
                     ]
-                    generation = audit_neighbor_generation(
-                        parent_pose_index,
-                        (
+                    if position_only:
+                        position_bounds = (
                             camera.pose_l,
                             camera.pose_w,
                             camera.pose_h,
-                            camera.pose_n_elev,
-                            camera.pose_n_azim,
-                        ),
-                    )
+                        )
+                        position_actions = (
+                            (1, 0, 0),
+                            (-1, 0, 0),
+                            (0, 1, 0),
+                            (0, -1, 0),
+                            (0, 0, 1),
+                            (0, 0, -1),
+                        )
+                        attempts = []
+                        for action in position_actions:
+                            candidate = [
+                                parent_pose_index[i] + action[i] for i in range(3)
+                            ]
+                            boundary = any(
+                                value < 0 or value >= position_bounds[i]
+                                for i, value in enumerate(candidate)
+                            )
+                            attempts.append(
+                                {
+                                    'pose_index': candidate,
+                                    'rejection_reason': 'boundary' if boundary else None,
+                                }
+                            )
+                        generation = {
+                            'attempted_count': len(position_actions),
+                            'attempts': attempts,
+                        }
+                    else:
+                        generation = audit_neighbor_generation(
+                            parent_pose_index,
+                            (
+                                camera.pose_l,
+                                camera.pose_w,
+                                camera.pose_h,
+                                camera.pose_n_elev,
+                                camera.pose_n_azim,
+                            ),
+                        )
                     step_diagnostic['attempted_candidate_count'] += generation[
                         'attempted_count'
                     ]
@@ -870,12 +1109,21 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                             'direct_crossing_candidate_generated'
                         ] = True
                     has_unvisited = any(
-                        not camera.get_pose_from_idx(row)[1]
+                        (
+                            not position_state.is_observed(row)
+                            if position_only
+                            else not camera.get_pose_from_idx(row)[1]
+                        )
                         for row in neighbor_indices
                     )
                     if has_unvisited:
                         for row in neighbor_indices:
-                            if camera.get_pose_from_idx(row)[1]:
+                            row_visited = (
+                                position_state.is_observed(row)
+                                if position_only
+                                else camera.get_pose_from_idx(row)[1]
+                            )
+                            if row_visited:
                                 step_diagnostic['rejections'].append({
                                     'beam_parent': beam_index,
                                     'pose_index': [
@@ -887,12 +1135,12 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                 rendering_candidate = []
                 idx_candidate = []
 
-                current_pose, _ = camera.get_pose_from_idx(beam['current_pose_idx'])
+                current_pose, _ = camera_pose_from_state(beam['current_pose_idx'])
                 X_current, _, _ = camera.get_camera_parameters_from_pose(current_pose)
                 current_loc = X_current[0].cpu().numpy()
 
                 for row in valid_neighbors:
-                    neighbor_pose, _ = camera.get_pose_from_idx(row)
+                    neighbor_pose, _ = camera_pose_from_state(row)
                     X_neighbor, V_neighbor, fov_neighbor = camera.get_camera_parameters_from_pose(neighbor_pose)
                     target_loc = X_neighbor[0].cpu().numpy()
 
@@ -922,6 +1170,9 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                         collision_reason = 'predicted_point_cloud_collision'
 
                     if collision_reason is not None:
+                        search_step_metrics[
+                            "collision_rejected_candidate_count"
+                        ] += 1
                         if cross_tile_enabled:
                             step_diagnostic['rejections'].append({
                                 'beam_parent': beam_index,
@@ -1045,6 +1296,7 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                                 ],
                             } if cross_tile_enabled else None),
                         })
+                        search_step_metrics["rendered_candidate_count"] += 1
 
             if len(all_candidates) == 0:
                 print("No valid candidates found!")
@@ -1052,6 +1304,14 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                     planning_diagnostic['beam_steps'].append(step_diagnostic)
                 if not any(beam["trajectory"] for beam in beams):
                     beams = []
+                search_step_metrics["search_seconds"] = (
+                    time.perf_counter() - search_step_started
+                )
+                if metrics_recorder is not None:
+                    metrics_recorder.record_planner_search_step(
+                        search_step_metrics
+                    )
+                print("Planner search step summary:", search_step_metrics)
                 break
 
             # coverage gains based on rgb imgs
@@ -1093,6 +1353,13 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                 )
                 planning_diagnostic['beam_steps'].append(step_diagnostic)
             beams = all_candidates[:beam_width]
+            search_step_metrics["retained_beam_count"] = len(beams)
+            search_step_metrics["search_seconds"] = (
+                time.perf_counter() - search_step_started
+            )
+            if metrics_recorder is not None:
+                metrics_recorder.record_planner_search_step(search_step_metrics)
+            print("Planner search step summary:", search_step_metrics)
             # print(f"Step {bs_i + 1}: Best total_coverage_gain = {beams[0]['total_coverage_gain']:.2f}, Score = {beams[0]['score']}/{n_points}, Current step gain = {beams[0].get('coverage_gain', 0):.2f}")
             print(f"Top {min(beam_width, len(all_candidates))} beams selected from {len(all_candidates)} candidates")
 
@@ -1149,8 +1416,27 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
 
         interpolation_step = 1
         for i in range(camera.n_interpolation_steps):
-            camera.update_camera(next_idx, interpolation_step=interpolation_step)
-            _capture_planner_observation(camera, mesh, rgb_provider, params)
+            next_camera_idx = camera_pose_index(next_idx)
+            camera.update_camera(
+                next_camera_idx, interpolation_step=interpolation_step
+            )
+            if position_only:
+                position_state.capture_and_commit(
+                    next_idx,
+                    _capture_planner_observation,
+                    camera,
+                    mesh,
+                    rgb_provider,
+                    params,
+                )
+                camera.pioneer_state_index_history = torch.vstack(
+                    (
+                        camera.pioneer_state_index_history,
+                        next_idx.reshape(1, 3),
+                    )
+                )
+            else:
+                _capture_planner_observation(camera, mesh, rgb_provider, params)
             interpolation_step += 1
 
         pose_i += 1
@@ -1197,9 +1483,39 @@ def run_magician_test(params_name,
         ("pioneer_face_fov_degrees", 90.0),
         ("pioneer_voxel_size", test_resolution),
         ("pioneer_remove_rotation_only_candidates", True),
+        ("pioneer_planner_state_mode", "legacy_pose5d"),
+        ("pioneer_cubemap_rig_frame", None),
+        ("pioneer_cubemap_extrinsics_version", None),
+        ("pioneer_canonical_orientation_indices", None),
     ):
         setattr(params, name, getattr(test_params, name, default))
     if _uses_pioneer_observation(params):
+        state_mode = _pioneer_planner_state_mode(params)
+        if params.pioneer_cubemap_rig_frame is None:
+            params.pioneer_cubemap_rig_frame = (
+                CUBEMAP_RIG_FRAME_WORLD
+                if state_mode == "position_only"
+                else CUBEMAP_RIG_FRAME_BODY
+            )
+        expected_extrinsics = (
+            CUBEMAP_WORLD_EXTRINSICS_VERSION
+            if params.pioneer_cubemap_rig_frame == CUBEMAP_RIG_FRAME_WORLD
+            else CUBEMAP_BODY_EXTRINSICS_VERSION
+        )
+        if params.pioneer_cubemap_extrinsics_version is None:
+            params.pioneer_cubemap_extrinsics_version = expected_extrinsics
+        _pioneer_extrinsics_version(params)
+        if state_mode == "position_only":
+            canonical = params.pioneer_canonical_orientation_indices
+            if (
+                not isinstance(canonical, (list, tuple))
+                or len(canonical) != 2
+                or any(type(value) is not int for value in canonical)
+            ):
+                raise ValueError(
+                    "position_only requires two integer "
+                    "pioneer_canonical_orientation_indices."
+                )
         if float(params.pioneer_face_fov_degrees) != 90.0:
             raise ValueError("PIONEER cubemap faces require exactly 90 degree FOV.")
         if (
@@ -1358,6 +1674,28 @@ def run_magician_test(params_name,
                                            device, training_frames_path,
                                            mirrored_scene=mirrored_scene, mirrored_axis=mirrored_axis,
                                            rgb_provider=rgb_provider)
+                if metrics_recorder is not None and _uses_pioneer_observation(params):
+                    audit_spec = getattr(camera, "pioneer_position_spec", None)
+                    if audit_spec is None:
+                        current_orientation = tuple(
+                            int(value)
+                            for value in camera.cam_idx[3:].detach().cpu().tolist()
+                        )
+                        audit_spec = PositionOnlySpec(
+                            position_shape=(
+                                camera.pose_l,
+                                camera.pose_w,
+                                camera.pose_h,
+                            ),
+                            orientation_shape=(
+                                camera.pose_n_elev,
+                                camera.pose_n_azim,
+                            ),
+                            canonical_orientation_index=current_orientation,
+                        )
+                    metrics_recorder.record_planner_structure(
+                        position_only_structure_audit(audit_spec)
+                    )
                 print(camera.X_cam_history[0], camera.V_cam_history[0])
 
                 coverage_evolution, X_cam_history, V_cam_history, full_pc, full_pc_colors, full_pc_idx = compute_magician_trajectory(params, macarons,
@@ -1376,12 +1714,16 @@ def run_magician_test(params_name,
 
                 experiment_metrics = None
                 experiment_metrics_path = None
+                planner_state_index_history = getattr(
+                    camera, "pioneer_state_index_history", camera.cam_idx_history
+                )
                 if metrics_recorder is not None:
                     experiment_metrics = metrics_recorder.finalize(
                         X_cam_history=X_cam_history,
                         V_cam_history=V_cam_history,
                         final_point_count=len(full_pc),
                         pose_index_history=camera.cam_idx_history,
+                        planner_state_index_history=planner_state_index_history,
                     )
                     experiment_metrics_path = write_online_metrics(
                         test_params, experiment_metrics
@@ -1398,6 +1740,10 @@ def run_magician_test(params_name,
                     'coverage': coverage_evolution,
                     'X_cam_history': X_cam_history.cpu().numpy(),
                     'V_cam_history': V_cam_history.cpu().numpy(),
+                    'planner_state_mode': _pioneer_planner_state_mode(params),
+                    'planner_state_index_history': (
+                        planner_state_index_history.cpu().numpy()
+                    ),
                     'points': full_pc.cpu().numpy(),
                     'points_color': full_pc_colors.cpu().numpy(),
                     'experiment_metrics': experiment_metrics,

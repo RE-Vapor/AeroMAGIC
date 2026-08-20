@@ -101,6 +101,8 @@ class TrajectoryMetricsRecorder:
         self.imagined_history_face_renders = 0
         self.imagined_candidate_bundle_renders = 0
         self.imagined_candidate_face_renders = 0
+        self.planner_search_steps = []
+        self.planner_structure_audit = None
         self.coverage = []
         cross_tile_enabled = _config_value(
             config, "experiment_cross_tile_diagnostics_enabled", False
@@ -246,6 +248,8 @@ class TrajectoryMetricsRecorder:
                 "face_count": int(bundle_data.get("face_count", len(face_point_counts))),
                 "face_names": list(bundle_data.get("face_names", [])),
                 "face_size": int(bundle_data.get("face_size", 0)),
+                "rig_frame": bundle_data.get("rig_frame"),
+                "extrinsics_version": bundle_data.get("extrinsics_version"),
                 "capture_timestamp_utc": bundle_data.get("capture_timestamp_utc"),
                 "capture_timestamp_unix_ns": bundle_data.get(
                     "capture_timestamp_unix_ns"
@@ -278,6 +282,40 @@ class TrajectoryMetricsRecorder:
         else:
             self.imagined_candidate_bundle_renders += 1
             self.imagined_candidate_face_renders += int(face_renders)
+
+    def record_planner_search_step(self, step: Mapping[str, Any]) -> None:
+        """Record one beam-search layer using planner-state, not camera, terms."""
+
+        integer_fields = (
+            "planning_iteration",
+            "beam_step",
+            "parent_beam_count",
+            "raw_action_proposal_count",
+            "translation_action_proposal_count",
+            "orientation_action_proposal_count",
+            "generated_candidate_count",
+            "valid_state_candidate_count",
+            "observed_rejected_candidate_count",
+            "collision_rejected_candidate_count",
+            "rendered_candidate_count",
+            "retained_beam_count",
+        )
+        normalized = {name: int(step.get(name, 0)) for name in integer_fields}
+        normalized["search_seconds"] = float(step.get("search_seconds", 0.0))
+        if any(normalized[name] < 0 for name in integer_fields):
+            raise ValueError("planner search counts must be non-negative")
+        if normalized["orientation_action_proposal_count"] > normalized[
+            "raw_action_proposal_count"
+        ]:
+            raise ValueError(
+                "orientation action proposals cannot exceed raw action proposals"
+            )
+        self.planner_search_steps.append(normalized)
+
+    def record_planner_structure(self, audit: Mapping[str, Any]) -> None:
+        if not isinstance(audit, Mapping):
+            raise TypeError("planner structure audit must be a mapping")
+        self.planner_structure_audit = dict(audit)
 
     def record_cross_tile_coverage(
         self,
@@ -377,6 +415,7 @@ class TrajectoryMetricsRecorder:
         V_cam_history: Any,
         final_point_count: int,
         pose_index_history: Any = None,
+        planner_state_index_history: Any = None,
     ) -> Mapping[str, Any]:
         self.synchronize()
         positions = _as_numpy(X_cam_history).astype(np.float64, copy=False).reshape(-1, 3)
@@ -438,6 +477,24 @@ class TrajectoryMetricsRecorder:
             },
             "cuda": cuda_metrics,
         }
+        if planner_state_index_history is not None:
+            planner_states = _as_numpy(planner_state_index_history)
+            if planner_states.ndim != 2 or planner_states.shape[0] != len(positions):
+                raise ValueError(
+                    "planner state history must be a 2D array with one state "
+                    "per captured observation"
+                )
+            expected_dimension = self.run_metadata.get("planner_state_dimension")
+            if (
+                expected_dimension is not None
+                and planner_states.shape[1] != int(expected_dimension)
+            ):
+                raise ValueError(
+                    "planner state history dimension does not match run metadata"
+                )
+            metrics["trajectory"]["planner_state_indices"] = (
+                planner_states.astype(np.int64, copy=False).tolist()
+            )
         if self.observation_bundles:
             metrics["pioneer_observation"] = {
                 "schema_version": 1,
@@ -460,6 +517,54 @@ class TrajectoryMetricsRecorder:
                     self.imagined_candidate_face_renders
                 ),
                 "bundles": self.observation_bundles,
+            }
+        if self.planner_search_steps:
+            count_fields = (
+                "parent_beam_count",
+                "raw_action_proposal_count",
+                "translation_action_proposal_count",
+                "orientation_action_proposal_count",
+                "generated_candidate_count",
+                "valid_state_candidate_count",
+                "observed_rejected_candidate_count",
+                "collision_rejected_candidate_count",
+                "rendered_candidate_count",
+                "retained_beam_count",
+            )
+            totals = {
+                name: int(sum(step[name] for step in self.planner_search_steps))
+                for name in count_fields
+            }
+            totals["search_seconds"] = float(
+                sum(step["search_seconds"] for step in self.planner_search_steps)
+            )
+            if (
+                self.observation_bundles
+                and totals["rendered_candidate_count"]
+                != self.imagined_candidate_bundle_renders
+            ):
+                raise ValueError(
+                    "planner rendered candidate count does not match imagined "
+                    "candidate bundle renders"
+                )
+            metrics["planner_search"] = {
+                "schema_version": 1,
+                "state_mode": self.run_metadata.get("pioneer_planner_state_mode"),
+                "state_dimension": self.run_metadata.get(
+                    "planner_state_dimension"
+                ),
+                "cubemap_rig_frame": self.run_metadata.get(
+                    "pioneer_cubemap_rig_frame"
+                ),
+                "cubemap_extrinsics_version": self.run_metadata.get(
+                    "pioneer_cubemap_extrinsics_version"
+                ),
+                "canonical_orientation_indices": self.run_metadata.get(
+                    "pioneer_canonical_orientation_indices"
+                ),
+                "steps": self.planner_search_steps,
+                "totals": totals,
+                "structure": self.planner_structure_audit,
             }
         if self.cross_tile_enabled:
             pose_indices = [] if pose_index_history is None else pose_index_history
@@ -559,6 +664,26 @@ def create_trajectory_metrics_recorder(
         "pioneer_face_size": _config_value(config, "pioneer_face_size", None),
         "pioneer_face_fov_degrees": _config_value(
             config, "pioneer_face_fov_degrees", None
+        ),
+        "pioneer_planner_state_mode": _config_value(
+            config, "pioneer_planner_state_mode", "legacy_pose5d"
+        ),
+        "planner_state_dimension": (
+            3
+            if _config_value(
+                config, "pioneer_planner_state_mode", "legacy_pose5d"
+            )
+            == "position_only"
+            else 5
+        ),
+        "pioneer_cubemap_rig_frame": _config_value(
+            config, "pioneer_cubemap_rig_frame", "body"
+        ),
+        "pioneer_cubemap_extrinsics_version": _config_value(
+            config, "pioneer_cubemap_extrinsics_version", None
+        ),
+        "pioneer_canonical_orientation_indices": _config_value(
+            config, "pioneer_canonical_orientation_indices", None
         ),
     }
     return TrajectoryMetricsRecorder(

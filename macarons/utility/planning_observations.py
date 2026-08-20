@@ -37,6 +37,12 @@ CUBEMAP_FACE_NAMES: Tuple[str, ...] = (
     "down",
 )
 
+CUBEMAP_RIG_FRAME_BODY = "body"
+CUBEMAP_RIG_FRAME_WORLD = "world"
+CUBEMAP_BODY_EXTRINSICS_VERSION = "pytorch3d-body-aligned-v1"
+CUBEMAP_WORLD_EXTRINSICS_VERSION = "pytorch3d-world-axes-v1"
+_CUBEMAP_RIG_FRAMES = (CUBEMAP_RIG_FRAME_BODY, CUBEMAP_RIG_FRAME_WORLD)
+
 # Directions are expressed in PyTorch3D view coordinates: +X is left, +Y is
 # up, and +Z points into the scene.  The polar faces use an explicit up vector
 # to avoid the look-at singularity and keep their seams deterministic.
@@ -190,6 +196,21 @@ def _view_to_world_axes(
     return axes @ reference_camera.R[0].transpose(-1, -2)
 
 
+def _validate_rig_frame(rig_frame: str) -> str:
+    if rig_frame not in _CUBEMAP_RIG_FRAMES:
+        allowed = ", ".join(_CUBEMAP_RIG_FRAMES)
+        raise ValueError(f"rig_frame must be one of: {allowed}.")
+    return rig_frame
+
+
+def _cubemap_extrinsics_version(rig_frame: str) -> str:
+    return (
+        CUBEMAP_WORLD_EXTRINSICS_VERSION
+        if rig_frame == CUBEMAP_RIG_FRAME_WORLD
+        else CUBEMAP_BODY_EXTRINSICS_VERSION
+    )
+
+
 def build_cubemap_cameras(
     center: Any,
     znear: float,
@@ -197,15 +218,20 @@ def build_cubemap_cameras(
     device: Any,
     *,
     reference_camera: Optional[FoVPerspectiveCameras] = None,
+    rig_frame: str = CUBEMAP_RIG_FRAME_BODY,
 ) -> Dict[str, FoVPerspectiveCameras]:
     """Build six square 90-degree cameras around one optical centre.
 
-    If ``reference_camera`` is supplied, ``front`` is aligned with that
-    camera's optical axis.  Without it, the face definitions use the global
-    PyTorch3D view axes.  Full-sphere coverage is identical in either case.
+    ``rig_frame="body"`` preserves the legacy behavior: when
+    ``reference_camera`` is supplied, ``front`` is aligned with that camera's
+    optical axis.  ``rig_frame="world"`` always uses the fixed axes in
+    :data:`CUBEMAP_WORLD_EXTRINSICS_VERSION` and deliberately ignores the
+    reference camera's orientation.  Without a reference, both modes use the
+    global PyTorch3D axes.
     """
 
     eye = _single_center(center, device)
+    rig_frame = _validate_rig_frame(rig_frame)
     if znear <= 0:
         raise ValueError("znear must be positive.")
     if zfar <= znear:
@@ -217,7 +243,10 @@ def build_cubemap_cameras(
         axes = torch.tensor(
             [direction_values, up_values], dtype=eye.dtype, device=eye.device
         )
-        axes = _view_to_world_axes(axes, reference_camera)
+        frame_reference = (
+            reference_camera if rig_frame == CUBEMAP_RIG_FRAME_BODY else None
+        )
+        axes = _view_to_world_axes(axes, frame_reference)
         direction = torch.nn.functional.normalize(axes[0], dim=0).reshape(1, 3)
         up = torch.nn.functional.normalize(axes[1], dim=0).reshape(1, 3)
         R, T = look_at_view_transform(eye=eye, at=eye + direction, up=up)
@@ -300,6 +329,7 @@ def capture_cubemap_observation(
     dir_path: Optional[str] = None,
     save_png: bool = True,
     max_faces_per_bin: int = 200000,
+    rig_frame: str = CUBEMAP_RIG_FRAME_BODY,
 ) -> ObservationBundle:
     """Render and optionally persist one six-face GT-mesh observation.
 
@@ -320,6 +350,8 @@ def capture_cubemap_observation(
     if camera.fov_camera is None:
         raise ValueError("camera.fov_camera must be initialized before capture.")
 
+    rig_frame = _validate_rig_frame(rig_frame)
+    extrinsics_version = _cubemap_extrinsics_version(rig_frame)
     device = camera.device
     center = camera.fov_camera.get_camera_center()
     znear = _scalar(getattr(camera.fov_camera, "znear", None), 1.0)
@@ -330,6 +362,7 @@ def capture_cubemap_observation(
         zfar,
         device,
         reference_camera=camera.fov_camera,
+        rig_frame=rig_frame,
     )
     renderer = _build_square_renderer(
         face_size,
@@ -389,6 +422,8 @@ def capture_cubemap_observation(
                         "znear": znear,
                         "observation_mode": "cubemap6",
                         "source": "gt_mesh",
+                        "rig_frame": rig_frame,
+                        "extrinsics_version": extrinsics_version,
                         "capture_timestamp_unix_ns": capture_timestamp_unix_ns,
                         "capture_timestamp_utc": capture_timestamp_utc,
                         "K_pixel": K_pixel.clone(),
@@ -410,6 +445,8 @@ def capture_cubemap_observation(
         metadata={
             "observation_mode": "cubemap6",
             "source": "gt_mesh",
+            "rig_frame": rig_frame,
+            "extrinsics_version": extrinsics_version,
             "face_size": face_size,
             "face_fov_degrees": 90.0,
             "render_count": len(faces),
@@ -761,6 +798,8 @@ def process_cubemap_observation(
         "face_count": len(bundle.faces),
         "face_names": list(CUBEMAP_FACE_NAMES),
         "face_size": int(bundle.faces[0].image_height),
+        "rig_frame": bundle.metadata.get("rig_frame"),
+        "extrinsics_version": bundle.metadata.get("extrinsics_version"),
         "capture_timestamp_utc": bundle.metadata.get("capture_timestamp_utc"),
         "capture_timestamp_unix_ns": bundle.metadata.get(
             "capture_timestamp_unix_ns"
@@ -872,7 +911,11 @@ def visible_union_from_depth_maps(
 
 
 __all__ = [
+    "CUBEMAP_BODY_EXTRINSICS_VERSION",
     "CUBEMAP_FACE_NAMES",
+    "CUBEMAP_RIG_FRAME_BODY",
+    "CUBEMAP_RIG_FRAME_WORLD",
+    "CUBEMAP_WORLD_EXTRINSICS_VERSION",
     "ObservationBundle",
     "PerspectiveFaceObservation",
     "build_cubemap_cameras",

@@ -131,6 +131,101 @@ class ExperimentMetricsTests(unittest.TestCase):
         self.assertEqual(counters["imagined_history_face_render_count"], 6)
         self.assertEqual(counters["imagined_candidate_face_render_count"], 6)
 
+    def test_position_only_search_audit_matches_candidate_renders(self):
+        recorder = create_trajectory_metrics_recorder(
+            {
+                "experiment_metrics_enabled": True,
+                "planning_observation_mode": "cubemap6",
+                "pioneer_planner_state_mode": "position_only",
+                "pioneer_cubemap_rig_frame": "world",
+                "pioneer_cubemap_extrinsics_version": (
+                    "pytorch3d-world-axes-v1"
+                ),
+                "pioneer_canonical_orientation_indices": [2, 0],
+            },
+            planner="pioneer",
+            scene="eiffel",
+            start_index=0,
+            capture_dir=".",
+            device="cpu",
+        )
+        recorder.record_observation_bundle(
+            {
+                "bundle_id": 0,
+                "face_count": 6,
+                "face_names": ["front", "back", "left", "right", "up", "down"],
+            },
+            provider_seconds=0.0,
+            geometry_seconds=0.0,
+        )
+        recorder.record_planner_structure(
+            {
+                "legacy_pose_state_count": 21600,
+                "position_only_state_count": 432,
+                "orientation_state_multiplier": 50,
+            }
+        )
+        for _ in range(5):
+            recorder.record_imagined_bundle_render(face_renders=6, kind="candidate")
+        recorder.record_planner_search_step(
+            {
+                "planning_iteration": 0,
+                "beam_step": 0,
+                "parent_beam_count": 1,
+                "raw_action_proposal_count": 6,
+                "translation_action_proposal_count": 6,
+                "orientation_action_proposal_count": 0,
+                "generated_candidate_count": 5,
+                "valid_state_candidate_count": 5,
+                "observed_rejected_candidate_count": 0,
+                "collision_rejected_candidate_count": 1,
+                "rendered_candidate_count": 4,
+                "retained_beam_count": 3,
+                "search_seconds": 0.5,
+            }
+        )
+        recorder.record_planner_search_step(
+            {
+                "planning_iteration": 0,
+                "beam_step": 1,
+                "parent_beam_count": 3,
+                "raw_action_proposal_count": 18,
+                "translation_action_proposal_count": 18,
+                "orientation_action_proposal_count": 0,
+                "generated_candidate_count": 15,
+                "valid_state_candidate_count": 12,
+                "observed_rejected_candidate_count": 3,
+                "collision_rejected_candidate_count": 11,
+                "rendered_candidate_count": 1,
+                "retained_beam_count": 1,
+                "search_seconds": 0.25,
+            }
+        )
+        result = recorder.finalize(
+            X_cam_history=np.array([[0, 0, 0]]),
+            V_cam_history=np.zeros((1, 2)),
+            final_point_count=0,
+            planner_state_index_history=np.array([[2, 9, 3]]),
+        )
+        self.assertEqual(result["run"]["planner_state_dimension"], 3)
+        search = result["planner_search"]
+        self.assertEqual(search["state_mode"], "position_only")
+        self.assertEqual(search["structure"]["position_only_state_count"], 432)
+        self.assertEqual(search["totals"]["parent_beam_count"], 4)
+        self.assertEqual(search["totals"]["raw_action_proposal_count"], 24)
+        self.assertEqual(search["totals"]["orientation_action_proposal_count"], 0)
+        self.assertEqual(search["totals"]["rendered_candidate_count"], 5)
+        self.assertEqual(
+            result["trajectory"]["planner_state_indices"], [[2, 9, 3]]
+        )
+        self.assertEqual(
+            search["totals"]["rendered_candidate_count"],
+            result["pioneer_observation"][
+                "imagined_candidate_bundle_render_count"
+            ],
+        )
+        self.assertAlmostEqual(search["totals"]["search_seconds"], 0.75)
+
     def test_n_tile_metrics_require_manifest_partition_and_recombine(self):
         try:
             import torch
