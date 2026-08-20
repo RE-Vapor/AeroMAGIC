@@ -7,6 +7,7 @@ dependencies are imported or constructed.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import math
 import os
 from typing import Any, Callable, Mapping, Optional
 
@@ -179,6 +180,22 @@ class GTDepthProvider(DepthProvider):
         self._frame_loader = frame_loader
         self._clamp_depth = clamp_depth
         self._mask_to_bool = mask_to_bool
+        self.depth_minimum = _config_value(config, "gt_depth_minimum", 0.5)
+        self.depth_maximum = _config_value(config, "gt_depth_maximum", 750.0)
+        for name, value in (
+            ("gt_depth_minimum", self.depth_minimum),
+            ("gt_depth_maximum", self.depth_maximum),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+            ):
+                raise ValueError(f"{name} must be a finite positive number.")
+            if value <= 0:
+                raise ValueError(f"{name} must be a finite positive number.")
+        if self.depth_maximum <= self.depth_minimum:
+            raise ValueError("gt_depth_maximum must exceed gt_depth_minimum.")
 
     def get_frame(self, observation: DepthObservation) -> DepthFrame:
         camera = observation.camera
@@ -195,7 +212,9 @@ class GTDepthProvider(DepthProvider):
             raise KeyError(f"GT frame {frame_path} is missing keys: {', '.join(missing)}")
 
         valid_mask = self._mask_to_bool(frame["mask"])
-        depth_z = self._clamp_depth(frame["zbuf"], 0.5, 750.0)
+        depth_z = self._clamp_depth(
+            frame["zbuf"], self.depth_minimum, self.depth_maximum
+        )
         return DepthFrame(
             rgb=frame["rgb"],
             depth_z=depth_z,

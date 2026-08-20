@@ -26,6 +26,10 @@ from ..utility.experiment_metrics import (
     write_online_metrics,
 )
 from ..utility.cross_tile_diagnostics import audit_neighbor_generation
+from ..utility.huge_3dgs_adapter import (
+    capture_planning_observation,
+    create_scene_rgb_providers,
+)
 import trimesh
 import lmdb
 
@@ -341,7 +345,8 @@ def setup_test_camera(params,
                       device,
                       training_frames_path,
                       mirrored_scene=False,
-                      mirrored_axis=None):
+                      mirrored_axis=None,
+                      rgb_provider=None):
     """
     Setup the camera used for prediction.
 
@@ -390,7 +395,7 @@ def setup_test_camera(params,
     camera.initialize_camera(start_cam_idx=start_cam_idx)
 
     # Capture initial image
-    camera.capture_image(mesh)
+    capture_planning_observation(camera, mesh, rgb_provider)
 
     return camera
 
@@ -398,7 +403,8 @@ def setup_test_camera(params,
 def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scene,
                            proxy_scene, covered_scene, mesh, intersector, device, settings,
                            depth_provider, test_resolution=0.05,
-                           compute_collision=False, metrics_recorder=None):
+                           compute_collision=False, metrics_recorder=None,
+                           rgb_provider=None):
 
     macarons.eval()
 
@@ -975,7 +981,7 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
         interpolation_step = 1
         for i in range(camera.n_interpolation_steps):
             camera.update_camera(next_idx, interpolation_step=interpolation_step)
-            camera.capture_image(mesh)
+            capture_planning_observation(camera, mesh, rgb_provider)
             interpolation_step += 1
 
         pose_i += 1
@@ -1034,6 +1040,9 @@ def run_magician_test(params_name,
         zfar=params.zfar,
         device=device,
     )
+    rgb_providers = create_scene_rgb_providers(
+        test_params, scene_names=test_scenes, device=device
+    )
 
     # Setup model and dataloader
     dataloader, macarons, memory = setup_test(
@@ -1066,6 +1075,7 @@ def run_magician_test(params_name,
 
             scene_name = scene_names[i_scene]
             depth_provider = depth_providers[scene_name]
+            rgb_provider = rgb_providers[scene_name]
             obj_name = obj_names[i_scene]
             settings = all_settings[i_scene]
             settings = Settings(settings, device, params.scene_scale_factor)
@@ -1137,7 +1147,8 @@ def run_magician_test(params_name,
                 # clear_folder(training_frames_path)
                 camera = setup_test_camera(params, mesh, intersector, start_cam_idx, settings, occupied_pose_data,
                                            device, training_frames_path,
-                                           mirrored_scene=mirrored_scene, mirrored_axis=mirrored_axis)
+                                           mirrored_scene=mirrored_scene, mirrored_axis=mirrored_axis,
+                                           rgb_provider=rgb_provider)
                 print(camera.X_cam_history[0], camera.V_cam_history[0])
 
                 metrics_recorder = create_trajectory_metrics_recorder(
@@ -1160,7 +1171,8 @@ def run_magician_test(params_name,
                                                                                       depth_provider=depth_provider,
                                                                                       test_resolution=test_resolution,
                                                                                       compute_collision=compute_collision,
-                                                                                      metrics_recorder=metrics_recorder)
+                                                                                      metrics_recorder=metrics_recorder,
+                                                                                      rgb_provider=rgb_provider)
 
                 experiment_metrics = None
                 experiment_metrics_path = None
