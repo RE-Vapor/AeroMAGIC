@@ -21,6 +21,7 @@ from macarons.utility.planning_depth import (
 class PlanningValidationLimitTests(unittest.TestCase):
     def test_applies_short_run_limits_without_touching_other_params(self):
         params = SimpleNamespace(
+            n_interpolation_steps=4,
             n_poses_in_trajectory=100,
             n_gt_surface_points=100000,
             n_proxy_points=800000,
@@ -29,6 +30,7 @@ class PlanningValidationLimitTests(unittest.TestCase):
         max_starts = apply_planning_validation_limits(
             params,
             {
+                "validation_n_interpolation_steps": 1,
                 "validation_n_poses_in_trajectory": 2,
                 "validation_n_gt_surface_points": 50000,
                 "validation_n_proxy_points": 200000,
@@ -36,6 +38,7 @@ class PlanningValidationLimitTests(unittest.TestCase):
                 "validation_memory_dir_name": "real_mesh_validation",
             },
         )
+        self.assertEqual(params.n_interpolation_steps, 1)
         self.assertEqual(params.n_poses_in_trajectory, 2)
         self.assertEqual(params.n_gt_surface_points, 50000)
         self.assertEqual(params.n_proxy_points, 200000)

@@ -1,0 +1,101 @@
+import json
+from pathlib import Path
+from types import SimpleNamespace
+import unittest
+
+from macarons.utility.debug_profiles import (
+    DEBUG_PROFILE_NAMES,
+    apply_debug_profile,
+    load_debug_profile,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PROFILES_DIR = ROOT / "configs" / "debug"
+
+
+class DebugProfileTests(unittest.TestCase):
+    def test_profile_contract_and_pan_6_bounds(self):
+        expected = {
+            "quick": (100000, 3, 3, 3),
+            "magician": (200000, 5, 5, 11),
+            "large-scene": (200000, 3, 3, 21),
+        }
+        for name in DEBUG_PROFILE_NAMES:
+            with self.subTest(profile=name):
+                profile = load_debug_profile(name, str(PROFILES_DIR))
+                overrides = profile["overrides"]
+                self.assertTrue(profile["debug_only"])
+                self.assertFalse(profile["coverage_comparable"])
+                self.assertEqual(
+                    (
+                        overrides["validation_n_proxy_points"],
+                        overrides["beam_width"],
+                        overrides["beam_steps"],
+                        overrides["experiment_budget_observations"],
+                    ),
+                    expected[name],
+                )
+                self.assertEqual(overrides["validation_n_interpolation_steps"], 1)
+                self.assertEqual(overrides["validation_max_start_positions"], 1)
+                self.assertEqual(overrides["random_seed"], 8)
+                self.assertEqual(overrides["torch_seed"], 9)
+
+    def test_apply_preserves_base_scene_and_isolates_outputs(self):
+        config = SimpleNamespace(
+            test_scenes=["eiffel"],
+            beam_width=10,
+            beam_steps=10,
+            lmdb_dir_name="formal_lmdb",
+            scone_lmdb_dir_name="formal_scone_lmdb",
+            validation_memory_dir_name="formal_memory",
+            results_json_name="formal.json",
+            experiment_run_id="formal_run",
+            experiment_metrics_dir="results/formal/metrics",
+        )
+        profile = apply_debug_profile(
+            config,
+            cli_profile_name="quick",
+            profiles_dir=str(PROFILES_DIR),
+        )
+        self.assertEqual(profile["name"], "quick")
+        self.assertEqual(config.test_scenes, ["eiffel"])
+        self.assertEqual(config.validation_n_proxy_points, 100000)
+        self.assertEqual(config.beam_width, 3)
+        self.assertEqual(config.lmdb_dir_name, "formal_lmdb_debug_quick")
+        self.assertEqual(config.scone_lmdb_dir_name, "formal_scone_lmdb_debug_quick")
+        self.assertEqual(config.validation_memory_dir_name, "formal_memory_debug_quick")
+        self.assertEqual(config.results_json_name, "formal_debug_quick.json")
+        self.assertEqual(config.experiment_run_id, "formal_run_debug_quick")
+        self.assertEqual(
+            config.experiment_metrics_dir,
+            "results/formal/metrics_debug_quick",
+        )
+        self.assertTrue(config.debug_only)
+        self.assertFalse(config.coverage_comparable)
+
+    def test_config_selector_matches_cli_selector(self):
+        config = {"debug_profile": "large-scene"}
+        profile = apply_debug_profile(
+            config,
+            cli_profile_name="large-scene",
+            profiles_dir=str(PROFILES_DIR),
+        )
+        self.assertEqual(profile["name"], "large-scene")
+        self.assertEqual(config["experiment_budget_observations"], 21)
+
+        with self.assertRaisesRegex(ValueError, "must match"):
+            apply_debug_profile(
+                {"debug_profile": "quick"},
+                cli_profile_name="magician",
+                profiles_dir=str(PROFILES_DIR),
+            )
+
+    def test_profiles_are_valid_json(self):
+        for name in DEBUG_PROFILE_NAMES:
+            with (PROFILES_DIR / f"{name}.json").open(encoding="utf-8") as stream:
+                self.assertIsInstance(json.load(stream), dict)
+
+
+if __name__ == "__main__":
+    unittest.main()

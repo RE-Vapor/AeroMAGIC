@@ -44,6 +44,7 @@ def apply_planning_validation_limits(params: Any, config: Any) -> Optional[int]:
     """
 
     overrides = {
+        "validation_n_interpolation_steps": ("n_interpolation_steps", 1),
         "validation_n_poses_in_trajectory": ("n_poses_in_trajectory", 0),
         "validation_n_gt_surface_points": ("n_gt_surface_points", 1),
         "validation_n_proxy_points": ("n_proxy_points", 1),

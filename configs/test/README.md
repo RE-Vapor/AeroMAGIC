@@ -23,9 +23,11 @@ Below is a detailed description of all the hyperparameters involved in evaluatin
 | `da3_cache_enabled` | bool | Enables persistent DA3 result caching. `false` performs inference without reading or writing cache files; outputs must remain numerically equivalent. |
 | `da3_scene_units_per_meter` | object | Required in DA3 mode: explicit positive `scene_units_per_meter` calibration keyed by every requested scene name. Missing scenes fail before model/dataset setup. `scene_scale_factor` is never treated as physical-unit evidence. |
 | `validation_n_poses_in_trajectory` | int | Optional short-run override. `2` exercises three captured views because the planners include pose zero. Omit it for the production trajectory length. |
+| `validation_n_interpolation_steps` | int | Optional positive override for RGB frames captured between the current pose and the next pose. Debug profiles set it to `1`. |
 | `validation_max_start_positions` | int | Optional number of configured start poses to exercise. Omit it to run every start pose. |
 | `validation_memory_dir_name` | str | Optional plain directory name that isolates validation captures from production/test memories. Paths and traversal components are rejected. |
 | `validation_n_gt_surface_points` / `validation_n_proxy_points` | int | Optional short-run capacity overrides. Omit them to retain the training configuration. |
+| `debug_profile` | str | Optional compute-only overlay: `quick`, `magician`, or `large-scene`. Equivalent to the CLI `--debug-profile` selector. See `configs/debug/README.md`. |
 | `scene_mesh_transforms` | object | Optional per-scene exporter/world-coordinate adaptation. Each entry may specify an axis permutation, axis signs, translation, and positive preprocessing scale. Missing scenes use the identity transform. |
 | `scene_texture_atlas_size` | int | Optional positive per-face texture atlas resolution used by both planning entry points and the real-scene CUDA gate. Defaults to the legacy value `32`; large textured meshes can lower it to bound loader memory without changing geometry or planning settings. |
 | `validation_use_occupied_pose` | bool | Defaults to `true`. Set `false` only for a validated custom scene without `occupied_pose.pt`; mesh collision checks remain independent. |

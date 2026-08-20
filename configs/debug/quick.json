@@ -1,0 +1,18 @@
+{
+  "name": "quick",
+  "description": "Fast three-observation logic and wiring check on one start pose.",
+  "debug_only": true,
+  "coverage_comparable": false,
+  "output_suffix": "debug_quick",
+  "overrides": {
+    "validation_n_proxy_points": 100000,
+    "beam_width": 3,
+    "beam_steps": 3,
+    "validation_n_interpolation_steps": 1,
+    "validation_n_poses_in_trajectory": 2,
+    "experiment_budget_observations": 3,
+    "validation_max_start_positions": 1,
+    "random_seed": 8,
+    "torch_seed": 9
+  }
+}
