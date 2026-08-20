@@ -11,6 +11,13 @@ run_inside_tmux() {
   local config_name="$4"
   local repo_root="$5"
 
+  finish_status() {
+    local return_code="$?"
+    printf 'finished_at_utc=%s\nexit_code=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$return_code" >> "$run_dir/status.txt"
+  }
+  trap finish_status EXIT
+
   cd "$repo_root"
   printf 'started_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$run_dir/status.txt"
   set +e
@@ -22,8 +29,6 @@ run_inside_tmux() {
     2>&1 | tee "$run_dir/run.log"
   local return_code="${PIPESTATUS[0]}"
   set -e
-  printf 'finished_at_utc=%s\nexit_code=%s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$return_code" >> "$run_dir/status.txt"
   return "$return_code"
 }
 

@@ -15,6 +15,7 @@
   "random_seed": 8,
   "torch_seed": 9,
   "lmdb_dir_name": "pan10_pioneer_eiffel_lmdb",
+  "validation_memory_dir_name": "pan10_pioneer_eiffel_memory",
   "beam_width": 3,
   "beam_steps": 3,
   "debug_profile": "quick",
