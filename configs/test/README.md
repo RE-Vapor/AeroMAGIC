@@ -33,7 +33,11 @@ Below is a detailed description of all the hyperparameters involved in evaluatin
 | `pioneer_face_size` | int | Square pixel dimension of each PIONEER face; must be at least `16`. |
 | `pioneer_face_fov_degrees` | float | Must be exactly `90.0` for gap-free cubemap coverage. |
 | `pioneer_voxel_size` | float | Positive world-space voxel size used to fuse and deduplicate the six reprojected point clouds before scene updates. |
-| `pioneer_remove_rotation_only_candidates` | bool | Removes orientation-only beam neighbors because a full-sphere PIONEER observation is invariant to rig yaw/elevation. PIONEER currently requires one interpolation step so every captured bundle is processed exactly once. |
+| `pioneer_planner_state_mode` | str | `legacy_pose5d` keeps the historical `[x, y, z, elevation, azimuth]` beam state for a controlled baseline. `position_only` makes the planner state `[x, y, z]`; camera orientation remains fixed render geometry and is not an action or visited-state key. `position_only` requires `planning_observation_mode=cubemap6`. |
+| `pioneer_cubemap_rig_frame` | str | `body` rotates the six fixed faces with the reference camera and is retained only for the legacy control. `world` uses the canonical world-axis cubemap required by `position_only`. This changes the rig frame, not the shared optical centre. |
+| `pioneer_cubemap_extrinsics_version` | str | Explicit fixed-extrinsics contract. PAN-11 uses `pytorch3d-body-aligned-v1` for the legacy control and `pytorch3d-world-axes-v1` for position-only planning. Every captured face still records its own `R`, `T`, and `K`; this field prevents silent frame changes between runs. |
+| `pioneer_canonical_orientation_indices` | list of 2 ints | Position-only adapter indices `[elevation, azimuth]` used to construct the compatibility camera pose. They are fixed for the run and never enter the 3D planner state. PAN-11 Eiffel uses `[2, 0]` (`pose_n_elev=5`, so index `2` is zero elevation). |
+| `pioneer_remove_rotation_only_candidates` | bool | Legacy-pose5d compatibility switch. Set it to `false` in PAN-11's rotation-enabled control so orientation proposals remain measurable. Position-only planning removes the orientation action branch structurally and does not use this filter. PIONEER requires one interpolation step so every captured bundle is processed exactly once. |
 | `scene_mesh_transforms` | object | Optional per-scene exporter/world-coordinate adaptation. Each entry may specify an axis permutation, axis signs, translation, and positive preprocessing scale. Missing scenes use the identity transform. |
 | `scene_texture_atlas_size` | int | Optional positive per-face texture atlas resolution used by both planning entry points and the real-scene CUDA gate. Defaults to the legacy value `32`; large textured meshes can lower it to bound loader memory without changing geometry or planning settings. |
 | `validation_use_occupied_pose` | bool | Defaults to `true`. Set `false` only for a validated custom scene without `occupied_pose.pt`; mesh collision checks remain independent. |
@@ -80,6 +84,39 @@ rotation, and the 0.1 preprocessing scale. Its `.obj.bak` source and independent
 `settings.json` envelope establish the separate `1.0 scene unit/m` calibration;
 reapplying the 12-NW-6C-5 transform would move the mesh outside all planning
 bounds.
+
+## 1.2 PAN-11 position-only controlled pair
+
+`test_pioneer_eiffel_pan11_legacy_pose5d_quick_config.json` and
+`test_pioneer_eiffel_pan11_position_only_quick_config.json` are the isolated
+three-observation PAN-11 pair. They pin the same Eiffel scene, seeds, quick
+budget, beam limits, GT depth, cubemap resolution, and voxel size, while using
+separate result, LMDB, capture-memory, run, and metrics namespaces. The legacy
+config deliberately enables orientation actions; the position-only config uses
+the world-canonical six-face rig and fixed `[2, 0]` compatibility orientation.
+
+After both metrics files exist, create the fail-closed JSON and Markdown report:
+
+```bash
+python scripts/compare_pioneer_planners.py \
+  --legacy-config configs/test/test_pioneer_eiffel_pan11_legacy_pose5d_quick_config.json \
+  --position-config configs/test/test_pioneer_eiffel_pan11_position_only_quick_config.json \
+  --legacy-metrics /absolute/path/to/legacy/online_metrics.json \
+  --position-metrics /absolute/path/to/position/online_metrics.json \
+  --legacy-status /absolute/path/to/legacy/status.txt \
+  --position-status /absolute/path/to/position/status.txt \
+  --legacy-manifest /absolute/path/to/legacy/manifest.txt \
+  --position-manifest /absolute/path/to/position/manifest.txt \
+  --output-json /absolute/path/to/PAN-11-comparison.json \
+  --output-markdown /absolute/path/to/PAN-11-comparison.md
+```
+
+The comparator refuses mismatched scene, seed, profile, or budget evidence and
+requires the full planner-search telemetry contract. It reports raw,
+translation, and orientation proposals; generated, valid, observed-rejected,
+collision-rejected, derived legal, rendered, and retained candidates; imagined
+bundle/face renders; and `trajectory_seconds`. Its timing sentence follows the
+measured direction and does not assume a speedup.
 
 When DA3 is provided as an isolated dependency overlay rather than installed
 in the active environment, use `scripts/run_with_da3_overlay.py` and set

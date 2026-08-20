@@ -157,6 +157,28 @@ expected_observations="$(
     "$profile_path"
 )"
 expected_real_face_renders="$((expected_observations * 6))"
+planner_contract="$(
+  "$python_bin" -c \
+    'import json, sys
+c = json.load(open(sys.argv[1], encoding="utf-8"))
+m = c.get("pioneer_planner_state_mode", "legacy_pose5d")
+r = c.get("pioneer_cubemap_rig_frame", "world" if m == "position_only" else "body")
+v = c.get("pioneer_cubemap_extrinsics_version", "")
+o = json.dumps(c.get("pioneer_canonical_orientation_indices"), separators=(",", ":"))
+print("|".join((m, r, v, o)))' \
+    "$config_path"
+)"
+IFS='|' read -r planner_state_mode cubemap_rig_frame \
+  cubemap_extrinsics_version canonical_orientation_indices <<< "$planner_contract"
+if [[ "$planner_state_mode" == "position_only" ]]; then
+  planner_state_dimension=3
+  raw_action_branches_per_parent=6
+  orientation_action_branches_per_parent=0
+else
+  planner_state_dimension=5
+  raw_action_branches_per_parent=10
+  orientation_action_branches_per_parent=4
+fi
 
 {
   printf 'schema_version=1\n'
@@ -171,6 +193,13 @@ expected_real_face_renders="$((expected_observations * 6))"
   printf 'debug_profile=%s\n' "$debug_profile"
   printf 'expected_observations=%s\n' "$expected_observations"
   printf 'expected_real_face_renders=%s\n' "$expected_real_face_renders"
+  printf 'planner_state_mode=%s\n' "$planner_state_mode"
+  printf 'planner_state_dimension=%s\n' "$planner_state_dimension"
+  printf 'cubemap_rig_frame=%s\n' "$cubemap_rig_frame"
+  printf 'cubemap_extrinsics_version=%s\n' "$cubemap_extrinsics_version"
+  printf 'canonical_orientation_indices=%s\n' "$canonical_orientation_indices"
+  printf 'raw_action_branches_per_parent=%s\n' "$raw_action_branches_per_parent"
+  printf 'orientation_action_branches_per_parent=%s\n' "$orientation_action_branches_per_parent"
   printf 'experiment_run_dir=%s\n' "$run_dir"
   printf 'python=%s\n' "$python_bin"
   printf 'command='

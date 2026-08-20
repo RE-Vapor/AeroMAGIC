@@ -117,6 +117,12 @@ class RunPioneerTmuxTests(unittest.TestCase):
                     {
                         "debug_profile": "pioneer-50",
                         "experiment_run_dir": run_dir,
+                        "pioneer_planner_state_mode": "position_only",
+                        "pioneer_cubemap_rig_frame": "world",
+                        "pioneer_cubemap_extrinsics_version": (
+                            "pytorch3d-world-axes-v1"
+                        ),
+                        "pioneer_canonical_orientation_indices": [2, 0],
                     }
                 ),
                 encoding="utf-8",
@@ -213,6 +219,16 @@ class RunPioneerTmuxTests(unittest.TestCase):
         self.assertEqual(manifest["debug_profile"], "pioneer-50")
         self.assertEqual(manifest["expected_observations"], "50")
         self.assertEqual(manifest["expected_real_face_renders"], "300")
+        self.assertEqual(manifest["planner_state_mode"], "position_only")
+        self.assertEqual(manifest["planner_state_dimension"], "3")
+        self.assertEqual(manifest["cubemap_rig_frame"], "world")
+        self.assertEqual(
+            manifest["cubemap_extrinsics_version"],
+            "pytorch3d-world-axes-v1",
+        )
+        self.assertEqual(manifest["canonical_orientation_indices"], "[2,0]")
+        self.assertEqual(manifest["raw_action_branches_per_parent"], "6")
+        self.assertEqual(manifest["orientation_action_branches_per_parent"], "0")
         self.assertIn("new-session", tmux_log.read_text(encoding="utf-8"))
 
         tmux_log.write_text("", encoding="utf-8")
