@@ -22,6 +22,12 @@ DA3_20OBS_CONFIG_PATH = (
     / "test"
     / "test_pioneer_hkust_pan11_position_only_da3_20obs_a1_config.json"
 )
+DA3_20OBS_A2_CONFIG_PATH = (
+    ROOT
+    / "configs"
+    / "test"
+    / "test_pioneer_hkust_pan11_position_only_da3_20obs_a2_config.json"
+)
 PIONEER_20_PROFILE_PATH = ROOT / "configs" / "debug" / "pioneer-20.json"
 CALIBRATIONS_PATH = ROOT / "configs" / "test" / "scene_metric_calibrations.json"
 
@@ -168,6 +174,31 @@ class Pan11HkustPositionOnlyConfigTests(unittest.TestCase):
         self.assertEqual(
             calibration["mesh"]["sha256"],
             "cd7b18645cc574c43e55d5f927f8440c810b32f2f8e859700018582535ffa635",
+        )
+
+    def test_da3_retry_a2_changes_only_mutable_output_namespaces(self):
+        a1 = json.loads(DA3_20OBS_CONFIG_PATH.read_text(encoding="utf-8"))
+        a2 = json.loads(DA3_20OBS_A2_CONFIG_PATH.read_text(encoding="utf-8"))
+        mutable_keys = {
+            "results_json_name",
+            "lmdb_dir_name",
+            "validation_memory_dir_name",
+            "experiment_run_id",
+            "experiment_run_dir",
+            "experiment_metrics_dir",
+            "da3_cache_dir",
+        }
+        self.assertEqual(set(a1), set(a2))
+        for key in set(a1) - mutable_keys:
+            self.assertEqual(a1[key], a2[key], key)
+        for key in mutable_keys:
+            self.assertNotEqual(a1[key], a2[key], key)
+            self.assertIn("a2" if "attempt" not in a2[key] else "attempt-002", a2[key])
+        self.assertTrue(a2["experiment_run_dir"].endswith("attempt-002"))
+        self.assertTrue(
+            a2["experiment_metrics_dir"].startswith(
+                a2["experiment_run_dir"] + "/"
+            )
         )
 
 
