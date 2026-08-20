@@ -4,19 +4,19 @@ set -euo pipefail
 DEFAULT_PYTHON=/home/ubuntu/anaconda3/envs/magician_mve/bin/python
 DEFAULT_CONFIG=test_pioneer_eiffel_quick_config.json
 
+finish_status() {
+  local return_code="$?"
+  printf 'finished_at_utc=%s\nexit_code=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$return_code" \
+    >> "$pioneer_status_file"
+}
+
 run_inside_tmux() {
   local gpu="$1"
   local run_dir="$2"
   local python_bin="$3"
   local config_name="$4"
   local repo_root="$5"
-
-  finish_status() {
-    local return_code="$?"
-    printf 'finished_at_utc=%s\nexit_code=%s\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$return_code" >> "$run_dir/status.txt"
-  }
-  trap finish_status EXIT
 
   cd "$repo_root"
   printf 'started_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$run_dir/status.txt"
@@ -34,6 +34,12 @@ run_inside_tmux() {
 
 if [[ "${1:-}" == "--inside-tmux" ]]; then
   shift
+  if [[ $# -ne 5 ]]; then
+    printf 'inside-tmux requires GPU RUN_DIR PYTHON CONFIG_NAME REPO_ROOT\n' >&2
+    exit 2
+  fi
+  pioneer_status_file="$2/status.txt"
+  trap finish_status EXIT
   run_inside_tmux "$@"
   exit $?
 fi
