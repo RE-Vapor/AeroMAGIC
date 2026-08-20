@@ -300,6 +300,57 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
             self.assertEqual(record["status"], "UNKNOWN")
             self.assertFalse(record["pioneer"]["cubemap6_metrics_verified"])
 
+    def test_pass_conclusion_is_neutral_across_observation_budgets(self):
+        for budget, debug_profile in ((3, "quick"), (50, "pioneer-50")):
+            with self.subTest(budget=budget), tempfile.TemporaryDirectory() as temporary:
+                registry_json, registry_md, run_dir, online = self._fixture(temporary)
+                config_path = run_dir / "config.json"
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+                config["experiment_budget_observations"] = budget
+                config["debug_profile"] = debug_profile
+                _write_json(config_path, config)
+
+                metrics = json.loads(online.read_text(encoding="utf-8"))
+                metrics["run"]["budget_observations"] = budget
+                metrics["run"]["debug_profile"] = debug_profile
+                metrics["trajectory"]["observation_count"] = budget
+                metrics["pioneer_observation"]["bundle_count"] = budget
+                metrics["pioneer_observation"]["real_face_render_count"] = 6 * budget
+                metrics["pioneer_observation"]["bundles"] = [
+                    {
+                        "bundle_id": bundle_id,
+                        "face_count": 6,
+                        "face_names": [
+                            "front",
+                            "back",
+                            "left",
+                            "right",
+                            "up",
+                            "down",
+                        ],
+                    }
+                    for bundle_id in range(budget)
+                ]
+                _write_json(online, metrics)
+
+                record = register_experiment(
+                    registry_json=registry_json,
+                    registry_md=registry_md,
+                    run_dir=run_dir,
+                    online_metrics=online,
+                    experiment_id=f"PAN-10-PIONEER-EIFFEL-{budget}OBS",
+                    scientific_run_commit=BASE_COMMIT,
+                    final_branch_commit=FINAL_COMMIT,
+                    status="PASS",
+                )
+
+                self.assertEqual(record["status"], "PASS")
+                self.assertEqual(
+                    record["conclusion"],
+                    "Verified PIONEER six-face cubemap run completed with exit code 0.",
+                )
+                self.assertNotIn("quick", record["conclusion"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()

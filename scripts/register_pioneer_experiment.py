@@ -572,7 +572,7 @@ def build_record(
     if scientific_full and final_full:
         relation = "same_as_run_commit" if scientific_full == final_full else "different_from_run_commit"
     conclusion = (
-        "Verified PIONEER six-face cubemap quick smoke completed with exit code 0."
+        "Verified PIONEER six-face cubemap run completed with exit code 0."
         if effective_status == "PASS"
         else f"No PASS claim: {status_reason}."
     )
