@@ -30,6 +30,12 @@ from ..utility.huge_3dgs_adapter import (
     capture_planning_observation,
     create_scene_rgb_providers,
 )
+from ..utility.planning_observations import (
+    build_cubemap_cameras,
+    capture_cubemap_observation,
+    process_cubemap_observation,
+    visible_union_from_depth_maps,
+)
 import trimesh
 import lmdb
 
@@ -175,6 +181,97 @@ def render_gaussian_depth(gaussian_means, gaussian_opacities, gaussian_scales,
         )
 
     return rendered_median_depth, rendered_image
+
+
+def _uses_pioneer_observation(params):
+    mode = getattr(params, "planning_observation_mode", "single")
+    if mode not in {"single", "cubemap6"}:
+        raise ValueError(
+            "planning_observation_mode must be either 'single' or 'cubemap6'."
+        )
+    return mode == "cubemap6"
+
+
+def _capture_planner_observation(camera, mesh, rgb_provider, params):
+    if not _uses_pioneer_observation(params):
+        return capture_planning_observation(camera, mesh, rgb_provider)
+    if rgb_provider is not None:
+        raise ValueError(
+            "PIONEER cubemap6 currently supports the Python mesh/GT RGB provider only."
+        )
+    bundle = capture_cubemap_observation(
+        camera=camera,
+        mesh=mesh,
+        face_size=int(getattr(params, "pioneer_face_size", 256)),
+        ambient_light_intensity=float(params.ambient_light_intensity),
+        rgb_provider=rgb_provider,
+    )
+    camera.last_observation_bundle = bundle
+    return bundle
+
+
+def _render_pioneer_gaussian_visibility(
+    *,
+    points,
+    gaussian_means,
+    gaussian_opacities,
+    gaussian_scales,
+    gaussian_rotations,
+    gaussian_colors,
+    reference_camera,
+    camera,
+    params,
+    device,
+    metrics_recorder=None,
+):
+    """Render a full-sphere imagined observation and OR visibility once."""
+
+    face_size = int(getattr(params, "pioneer_face_size", 256))
+    znear_value = getattr(reference_camera, "znear", None)
+    if torch.is_tensor(znear_value):
+        znear_value = float(znear_value.reshape(-1)[0].detach().cpu().item())
+    elif znear_value is None:
+        znear_value = 1.0
+    else:
+        znear_value = float(znear_value)
+    face_cameras = build_cubemap_cameras(
+        center=reference_camera.get_camera_center(),
+        znear=znear_value,
+        zfar=float(camera.zfar),
+        device=device,
+        reference_camera=reference_camera,
+    )
+    depth_maps = {}
+    for face_name, face_camera in face_cameras.items():
+        face_camera.K = (
+            face_camera.get_projection_transform().get_matrix().transpose(-1, -2)
+        )
+        gs_camera = convert_camera_from_pytorch3d_to_gs(
+            face_camera,
+            height=face_size,
+            width=face_size,
+            device=device,
+        )[0]
+        rendered_depth, _ = render_gaussian_depth(
+            gaussian_means=gaussian_means,
+            gaussian_opacities=gaussian_opacities,
+            gaussian_scales=gaussian_scales,
+            gaussian_rotations=gaussian_rotations,
+            gaussian_colors=gaussian_colors,
+            gs_camera=gs_camera,
+            device=device,
+            bg_color=torch.tensor([1.0, 1.0, 1.0], device=device),
+            kernel_size=0.01,
+        )
+        depth_maps[face_name] = rendered_depth[0]
+    if metrics_recorder is not None:
+        metrics_recorder.record_imagined_bundle_render(face_renders=len(depth_maps))
+    return visible_union_from_depth_maps(
+        points=points,
+        face_cameras=face_cameras,
+        depth_maps=depth_maps,
+        depth_tolerance=1.0,
+    )
 
 
 def update_gaussian_colors_from_novelty(novelty_values):
@@ -394,8 +491,9 @@ def setup_test_camera(params,
     # Select a random, valid camera pose as starting pose
     camera.initialize_camera(start_cam_idx=start_cam_idx)
 
-    # Capture initial image
-    capture_planning_observation(camera, mesh, rgb_provider)
+    # Capture one planner observation.  In PIONEER mode this is one six-face
+    # bundle and advances the observation counter once, not six times.
+    _capture_planner_observation(camera, mesh, rgb_provider, params)
 
     return camera
 
@@ -420,8 +518,36 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
     full_pc_idx = torch.zeros(0, 1, device=device)
     coverage_evolution = []
     pose_i = 0
+    pioneer_observation = _uses_pioneer_observation(params)
+    K_matrix = None
     
     def process_current_frame():
+        if pioneer_observation:
+            bundle = camera.last_observation_bundle
+            frame_data = process_cubemap_observation(
+                bundle=bundle,
+                proxy_points=proxy_scene.proxy_points,
+                gathering_factor=(
+                    params.gathering_factor
+                    * getattr(params, "planning_gathering_factor_multiplier", 2.0)
+                ),
+                sensor_range=params.sensor_range,
+                voxel_size=float(
+                    getattr(params, "pioneer_voxel_size", test_resolution)
+                ),
+                device=device,
+            )
+            if pose_i == 0 and len(frame_data["part_pc"]) == 0:
+                raise RuntimeError(
+                    "PIONEER first observation contains no points within sensor_range."
+                )
+            if metrics_recorder is not None:
+                metrics_recorder.record_observation_bundle(
+                    frame_data["bundle_stats"],
+                    provider_seconds=float(getattr(bundle, "capture_seconds", 0.0)),
+                    geometry_seconds=float(frame_data.get("geometry_seconds", 0.0)),
+                )
+            return frame_data
         return process_planning_depth_frame(
             camera=camera,
             depth_provider=depth_provider,
@@ -522,7 +648,7 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
         novelty_values = torch.zeros(n_points, device=device)  # (N,)
         gaussian_colors = update_gaussian_colors_from_novelty(novelty_values)  # (N, 3)
 
-        if pose_i == 0:
+        if pose_i == 0 and not pioneer_observation:
             sample_X_cam = camera.X_cam_history[0].view(1, 3)
             sample_V_cam = camera.V_cam_history[0].view(1, 2)
             R_sample, T_sample = get_camera_RT(sample_X_cam, sample_V_cam)
@@ -542,33 +668,46 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
             V_cam = current_V_cam.view(1, 2)
             R_cam, T_cam = get_camera_RT(X_cam, V_cam)
             current_fov_camera = FoVPerspectiveCameras(R=R_cam, T=T_cam, zfar=camera.zfar, device=device)
-            current_fov_camera.K = K_matrix  
-
-            gs_cameras = convert_camera_from_pytorch3d_to_gs(
-                current_fov_camera,
-                height=camera.image_height,
-                width=camera.image_width,
-                device=device
-            )
-            gs_camera = gs_cameras[0]
-
             with torch.no_grad():
-                rendered_depth, _ = render_gaussian_depth(
-                    gaussian_means=gaussian_means,
-                    gaussian_opacities=gaussian_opacities,
-                    gaussian_scales=gaussian_scales,
-                    gaussian_rotations=gaussian_rotations,
-                    gaussian_colors=gaussian_colors,
-                    gs_camera=gs_camera,
-                    device=device,
-                    bg_color=torch.tensor([1.0, 1.0, 1.0], device=device),
-                    kernel_size=0.01
-                )
-                current_depth_map = rendered_depth[0]
-
-                current_visible_mask = camera.check_point_visibility_from_depth(
-                    filtered_X_world, current_fov_camera, current_depth_map, depth_tolerance=1.0
-                )
+                if pioneer_observation:
+                    current_visible_mask = _render_pioneer_gaussian_visibility(
+                        points=filtered_X_world,
+                        gaussian_means=gaussian_means,
+                        gaussian_opacities=gaussian_opacities,
+                        gaussian_scales=gaussian_scales,
+                        gaussian_rotations=gaussian_rotations,
+                        gaussian_colors=gaussian_colors,
+                        reference_camera=current_fov_camera,
+                        camera=camera,
+                        params=params,
+                        device=device,
+                        metrics_recorder=metrics_recorder,
+                    )
+                else:
+                    current_fov_camera.K = K_matrix
+                    gs_camera = convert_camera_from_pytorch3d_to_gs(
+                        current_fov_camera,
+                        height=camera.image_height,
+                        width=camera.image_width,
+                        device=device,
+                    )[0]
+                    rendered_depth, _ = render_gaussian_depth(
+                        gaussian_means=gaussian_means,
+                        gaussian_opacities=gaussian_opacities,
+                        gaussian_scales=gaussian_scales,
+                        gaussian_rotations=gaussian_rotations,
+                        gaussian_colors=gaussian_colors,
+                        gs_camera=gs_camera,
+                        device=device,
+                        bg_color=torch.tensor([1.0, 1.0, 1.0], device=device),
+                        kernel_size=0.01,
+                    )
+                    current_visible_mask = camera.check_point_visibility_from_depth(
+                        filtered_X_world,
+                        current_fov_camera,
+                        rendered_depth[0],
+                        depth_tolerance=1.0,
+                    )
                 # update the novelty along the visited cameras
                 novelty_values[current_visible_mask] = 1.0
 
@@ -671,6 +810,15 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
             # extend to every beams
             for beam_index, beam in enumerate(beams):
                 neighbor_indices = camera.get_neighboring_poses(pose_idx=beam['current_pose_idx'])
+                if pioneer_observation and getattr(
+                    params, "pioneer_remove_rotation_only_candidates", True
+                ):
+                    translated = torch.any(
+                        neighbor_indices[:, :3]
+                        != beam["current_pose_idx"][:3].view(1, 3),
+                        dim=1,
+                    )
+                    neighbor_indices = neighbor_indices[translated]
                 valid_neighbors = camera.get_valid_neighbors(neighbor_indices=neighbor_indices, mesh=mesh)
 
                 if cross_tile_enabled:
@@ -800,55 +948,69 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                 # rendering for every pose
                 for j, pose_idx in enumerate(idx_candidate):
                     fov_camera = rendering_candidate[j]
-                    fov_camera.K = K_matrix
-
-                    gs_cameras = convert_camera_from_pytorch3d_to_gs(
-                        fov_camera,
-                        height=camera.image_height,
-                        width=camera.image_width,
-                        device=device
-                    )
-                    gs_camera = gs_cameras[0]
 
                     # update colors
                     current_novelty= beam['novelty_values']
                     gaussian_colors = update_gaussian_colors_from_novelty(current_novelty)
 
                     with torch.no_grad():
-                        rendered_depth, rendered_image = render_gaussian_depth(
-                            gaussian_means=gaussian_means,
-                            gaussian_opacities=gaussian_opacities,
-                            gaussian_scales=gaussian_scales,
-                            gaussian_rotations=gaussian_rotations,
-                            gaussian_colors=gaussian_colors,
-                            gs_camera=gs_camera,
-                            device=device,
-                            bg_color=torch.tensor([1.0, 1.0, 1.0], device=device),
-                            kernel_size=0.01
-                        )
-                        depth_map = rendered_depth[0]
-
-                        # compute visible mask
-                        visible_mask = camera.check_point_visibility_from_depth(
-                            filtered_X_world, fov_camera, depth_map, depth_tolerance=1.0
-                        )
-
-                        # white pixels: unseen points（novelty_values=0）
-                        valid_depth_mask = depth_map > 0
-                        rgb_image = rendered_image  # shape: [3, H, W]
-                        grayscale = rgb_image.mean(dim=0)  # [H, W]
-
-               
-                        depth_threshold = scene_scale / 2.0  
-
-                        if valid_depth_mask.any():
-                            nb_observed_pts_per_pixel = (depth_map / depth_threshold) ** 2
-                            depth_weight = nb_observed_pts_per_pixel.clamp_max(1.0)
-
-                            # compute coverage gain by using novelty map and depth weights map
-                            coverage_gain = (grayscale * depth_weight * valid_depth_mask.float()).sum().item()
+                        if pioneer_observation:
+                            visible_mask = _render_pioneer_gaussian_visibility(
+                                points=filtered_X_world,
+                                gaussian_means=gaussian_means,
+                                gaussian_opacities=gaussian_opacities,
+                                gaussian_scales=gaussian_scales,
+                                gaussian_rotations=gaussian_rotations,
+                                gaussian_colors=gaussian_colors,
+                                reference_camera=fov_camera,
+                                camera=camera,
+                                params=params,
+                                device=device,
+                                metrics_recorder=metrics_recorder,
+                            )
+                            coverage_gain = (
+                                visible_mask & (current_novelty <= 0)
+                            ).sum().item()
                         else:
-                            coverage_gain = 0.0
+                            fov_camera.K = K_matrix
+                            gs_camera = convert_camera_from_pytorch3d_to_gs(
+                                fov_camera,
+                                height=camera.image_height,
+                                width=camera.image_width,
+                                device=device,
+                            )[0]
+                            rendered_depth, rendered_image = render_gaussian_depth(
+                                gaussian_means=gaussian_means,
+                                gaussian_opacities=gaussian_opacities,
+                                gaussian_scales=gaussian_scales,
+                                gaussian_rotations=gaussian_rotations,
+                                gaussian_colors=gaussian_colors,
+                                gs_camera=gs_camera,
+                                device=device,
+                                bg_color=torch.tensor([1.0, 1.0, 1.0], device=device),
+                                kernel_size=0.01,
+                            )
+                            depth_map = rendered_depth[0]
+                            visible_mask = camera.check_point_visibility_from_depth(
+                                filtered_X_world,
+                                fov_camera,
+                                depth_map,
+                                depth_tolerance=1.0,
+                            )
+                            valid_depth_mask = depth_map > 0
+                            grayscale = rendered_image.mean(dim=0)
+                            depth_threshold = scene_scale / 2.0
+                            if valid_depth_mask.any():
+                                depth_weight = (
+                                    (depth_map / depth_threshold) ** 2
+                                ).clamp_max(1.0)
+                                coverage_gain = (
+                                    grayscale
+                                    * depth_weight
+                                    * valid_depth_mask.float()
+                                ).sum().item()
+                            else:
+                                coverage_gain = 0.0
 
                         new_novelty = current_novelty.clone()
                         new_novelty[visible_mask] = 1.0
@@ -981,7 +1143,7 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
         interpolation_step = 1
         for i in range(camera.n_interpolation_steps):
             camera.update_camera(next_idx, interpolation_step=interpolation_step)
-            capture_planning_observation(camera, mesh, rgb_provider)
+            _capture_planner_observation(camera, mesh, rgb_provider, params)
             interpolation_step += 1
 
         pose_i += 1
@@ -1021,6 +1183,28 @@ def run_magician_test(params_name,
 
     max_start_positions = apply_planning_validation_limits(params, test_params)
     set_planning_seeds(test_params or {})
+
+    for name, default in (
+        ("planning_observation_mode", "single"),
+        ("pioneer_face_size", 256),
+        ("pioneer_face_fov_degrees", 90.0),
+        ("pioneer_voxel_size", test_resolution),
+        ("pioneer_remove_rotation_only_candidates", True),
+    ):
+        setattr(params, name, getattr(test_params, name, default))
+    if _uses_pioneer_observation(params):
+        if float(params.pioneer_face_fov_degrees) != 90.0:
+            raise ValueError("PIONEER cubemap faces require exactly 90 degree FOV.")
+        if (
+            isinstance(params.pioneer_face_size, bool)
+            or not isinstance(params.pioneer_face_size, int)
+            or params.pioneer_face_size < 16
+        ):
+            raise ValueError("pioneer_face_size must be an integer >= 16.")
+        if not use_perfect_depth_map:
+            raise ValueError(
+                "PIONEER cubemap6 pilot currently requires use_perfect_depth_map=true."
+            )
 
     if dataset_path is None:
         params.data_path = data_path
@@ -1153,7 +1337,9 @@ def run_magician_test(params_name,
 
                 metrics_recorder = create_trajectory_metrics_recorder(
                     test_params,
-                    planner="magician",
+                    planner=(
+                        "pioneer" if _uses_pioneer_observation(params) else "magician"
+                    ),
                     scene=scene_name,
                     start_index=start_cam_idx_i,
                     capture_dir=training_frames_path,

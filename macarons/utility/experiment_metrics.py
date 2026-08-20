@@ -1,9 +1,8 @@
-"""Leakage-safe telemetry for planning experiments.
+"""Telemetry for planning experiments.
 
-The online recorder intentionally sees only the depth-provider result and the
-state already consumed by the planner.  Renderer ``zbuf`` and renderer masks
-are read exclusively by ``scripts/analyze_planning_diagnostics.py`` after the
-planner process has exited.
+Single-view runs keep renderer ``zbuf`` and renderer masks in offline
+diagnostics.  PIONEER's explicit Python mesh/GT pilot records only aggregate
+six-face bundle statistics from geometry already consumed by the planner.
 """
 
 from __future__ import annotations
@@ -95,6 +94,9 @@ class TrajectoryMetricsRecorder:
             _config_value(config, "da3_scene_units_per_meter", {}).get(scene, 1.0)
         )
         self.frames = []
+        self.observation_bundles = []
+        self.imagined_bundle_renders = 0
+        self.imagined_face_renders = 0
         self.coverage = []
         cross_tile_enabled = _config_value(
             config, "experiment_cross_tile_diagnostics_enabled", False
@@ -222,6 +224,43 @@ class TrajectoryMetricsRecorder:
             }
         )
 
+    def record_observation_bundle(
+        self,
+        bundle_data: Mapping[str, Any],
+        *,
+        provider_seconds: float,
+        geometry_seconds: float,
+    ) -> None:
+        """Record one PIONEER full-sphere observation as one planner event."""
+
+        face_point_counts = [
+            int(value) for value in bundle_data.get("face_point_counts", [])
+        ]
+        self.observation_bundles.append(
+            {
+                "bundle_id": int(bundle_data["bundle_id"]),
+                "face_count": int(bundle_data.get("face_count", len(face_point_counts))),
+                "face_names": list(bundle_data.get("face_names", [])),
+                "face_size": int(bundle_data.get("face_size", 0)),
+                "face_point_counts": face_point_counts,
+                "raw_point_count": int(bundle_data.get("raw_point_count", 0)),
+                "unique_point_count": int(bundle_data.get("unique_point_count", 0)),
+                "deduplicated_point_count": int(
+                    bundle_data.get("raw_point_count", 0)
+                    - bundle_data.get("unique_point_count", 0)
+                ),
+                "proxy_union_count": int(bundle_data.get("proxy_union_count", 0)),
+                "provider_seconds": float(provider_seconds),
+                "geometry_seconds": float(geometry_seconds),
+            }
+        )
+
+    def record_imagined_bundle_render(self, *, face_renders: int = 6) -> None:
+        """Count one candidate/history bundle and its physical face renders."""
+
+        self.imagined_bundle_renders += 1
+        self.imagined_face_renders += int(face_renders)
+
     def record_cross_tile_coverage(
         self,
         *,
@@ -343,7 +382,9 @@ class TrajectoryMetricsRecorder:
         metrics = {
             "schema_version": self.schema_version,
             "online_only": True,
-            "renderer_gt_read": False,
+            "renderer_gt_read": (
+                self.run_metadata.get("planning_observation_mode") == "cubemap6"
+            ),
             "planner": self.planner,
             "scene": self.scene,
             "start_index": self.start_index,
@@ -362,11 +403,34 @@ class TrajectoryMetricsRecorder:
             },
             "latency": {
                 "trajectory_seconds": float(time.perf_counter() - self.started_at),
-                "provider_seconds": float(sum(frame["provider_seconds"] for frame in self.frames)),
-                "geometry_seconds": float(sum(frame["geometry_seconds"] for frame in self.frames)),
+                "provider_seconds": float(
+                    sum(frame["provider_seconds"] for frame in self.frames)
+                    + sum(
+                        bundle["provider_seconds"]
+                        for bundle in self.observation_bundles
+                    )
+                ),
+                "geometry_seconds": float(
+                    sum(frame["geometry_seconds"] for frame in self.frames)
+                    + sum(
+                        bundle["geometry_seconds"]
+                        for bundle in self.observation_bundles
+                    )
+                ),
             },
             "cuda": cuda_metrics,
         }
+        if self.observation_bundles:
+            metrics["pioneer_observation"] = {
+                "schema_version": 1,
+                "bundle_count": len(self.observation_bundles),
+                "real_face_render_count": int(
+                    sum(bundle["face_count"] for bundle in self.observation_bundles)
+                ),
+                "imagined_bundle_render_count": self.imagined_bundle_renders,
+                "imagined_face_render_count": self.imagined_face_renders,
+                "bundles": self.observation_bundles,
+            }
         if self.cross_tile_enabled:
             pose_indices = [] if pose_index_history is None else pose_index_history
             metrics["cross_tile"] = {
@@ -447,7 +511,20 @@ def create_trajectory_metrics_recorder(
         "gt_mesh_segment_collision_prior": bool(
             _config_value(config, "compute_collision", False)
         ),
-        "rade_gs_prior": planner.lower() == "magician",
+        "rade_gs_prior": planner.lower() in {"magician", "pioneer"},
+        "planning_observation_mode": _config_value(
+            config, "planning_observation_mode", "single"
+        ),
+        "pioneer_face_count": (
+            6
+            if _config_value(config, "planning_observation_mode", "single")
+            == "cubemap6"
+            else 1
+        ),
+        "pioneer_face_size": _config_value(config, "pioneer_face_size", None),
+        "pioneer_face_fov_degrees": _config_value(
+            config, "pioneer_face_fov_degrees", None
+        ),
     }
     return TrajectoryMetricsRecorder(
         planner=planner,
