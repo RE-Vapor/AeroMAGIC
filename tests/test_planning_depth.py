@@ -14,6 +14,7 @@ from macarons.utility.planning_depth import (
     scene_texture_atlas_size,
     set_planning_seeds,
     update_proxy_state,
+    validation_requires_complete_occupied_pose,
     validation_uses_occupied_pose,
 )
 
@@ -78,6 +79,19 @@ class PlanningValidationLimitTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "validation_use_occupied_pose"):
             validation_uses_occupied_pose({"validation_use_occupied_pose": 0})
+
+        self.assertFalse(validation_requires_complete_occupied_pose({}))
+        self.assertTrue(
+            validation_requires_complete_occupied_pose(
+                {"validation_require_complete_occupied_pose": True}
+            )
+        )
+        with self.assertRaisesRegex(
+            ValueError, "validation_require_complete_occupied_pose"
+        ):
+            validation_requires_complete_occupied_pose(
+                {"validation_require_complete_occupied_pose": 1}
+            )
 
     def test_scene_texture_atlas_size_preserves_legacy_default_and_validates_override(self):
         self.assertEqual(scene_texture_atlas_size({}), 32)

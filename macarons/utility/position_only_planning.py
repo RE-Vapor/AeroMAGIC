@@ -217,13 +217,33 @@ class PositionOnlyPlannerState:
         mask = torch.tensor(unseen, dtype=torch.bool, device=neighbors.device)
         return neighbors[mask]
 
-    def valid_neighbors(self, xyz_index: Any) -> torch.Tensor:
-        """Prefer unseen XYZ states, but preserve legacy dead-end backtracking."""
+    def valid_neighbors(
+        self,
+        xyz_index: Any,
+        *,
+        is_available: Callable[[torch.Tensor], bool] = None,
+    ) -> torch.Tensor:
+        """Prefer unseen available XYZ states, then backtrack through available ones."""
 
         neighbors = position_neighbors(xyz_index, self.spec)
         if neighbors.shape[0] == 0:
             return neighbors
-        unseen = self.unseen_neighbors(xyz_index)
+        if is_available is not None:
+            if not callable(is_available):
+                raise TypeError("is_available must be callable.")
+            available = [bool(is_available(neighbor)) for neighbor in neighbors]
+            mask = torch.tensor(
+                available, dtype=torch.bool, device=neighbors.device
+            )
+            neighbors = neighbors[mask]
+            if neighbors.shape[0] == 0:
+                return neighbors
+        unseen_mask = torch.tensor(
+            [not self.is_observed(neighbor) for neighbor in neighbors],
+            dtype=torch.bool,
+            device=neighbors.device,
+        )
+        unseen = neighbors[unseen_mask]
         return unseen if unseen.shape[0] > 0 else neighbors
 
     def commit_full_sphere_capture(self, xyz_index: Any, bundle: Any) -> None:

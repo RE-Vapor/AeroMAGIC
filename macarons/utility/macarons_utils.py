@@ -4146,6 +4146,31 @@ class Camera:
 
         return is_occupied
 
+    def validate_complete_occupied_pose(self):
+        """Fail unless occupancy explicitly covers every XYZ camera position."""
+
+        if not self.use_occupied_pose:
+            raise ValueError(
+                "complete occupied-pose validation requires occupied-pose data"
+            )
+        expected_keys = {
+            str([i_l, i_w, i_h])
+            for i_l in range(self.pose_l)
+            for i_w in range(self.pose_w)
+            for i_h in range(self.pose_h)
+        }
+        actual_keys = set(self.pose_is_occupied)
+        missing_keys = sorted(expected_keys - actual_keys)
+        unexpected_keys = sorted(actual_keys - expected_keys)
+        if missing_keys or unexpected_keys:
+            raise ValueError(
+                "occupied-pose data must cover the complete camera XYZ lattice; "
+                f"expected={len(expected_keys)}, actual={len(actual_keys)}, "
+                f"missing={len(missing_keys)}, unexpected={len(unexpected_keys)}, "
+                f"missing_sample={missing_keys[:3]}, "
+                f"unexpected_sample={unexpected_keys[:3]}"
+            )
+
     def check_if_pose_is_valid(self, mesh, pose, input_type='idx'):
         """
         Return True if the camera pose is valid.

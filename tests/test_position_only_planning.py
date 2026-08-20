@@ -146,6 +146,55 @@ class PositionOnlyPlanningTests(unittest.TestCase):
         self.assertEqual(audit["removed_orientation_action_branch_count"], 4)
         self.assertEqual(audit["canonical_orientation_index"], [2, 0])
 
+    def test_occupied_neighbors_are_filtered_before_unseen_and_backtracking_policy(self):
+        state = PositionOnlyPlannerState(self.spec)
+        center = torch.tensor([2, 5, 2], dtype=torch.long)
+        occupied = (3, 5, 2)
+
+        def is_available(row):
+            return tuple(row.tolist()) != occupied
+
+        available = state.valid_neighbors(center, is_available=is_available)
+        self.assertNotIn(list(occupied), available.tolist())
+        self.assertEqual(len(available), 5)
+
+        for neighbor in available:
+            state.capture_and_commit(neighbor, lambda: _bundle())
+        backtracking = state.valid_neighbors(center, is_available=is_available)
+        self.assertEqual(
+            {tuple(row) for row in backtracking.tolist()},
+            {tuple(row) for row in available.tolist()},
+        )
+
+        with self.assertRaisesRegex(TypeError, "is_available"):
+            state.valid_neighbors(center, is_available=False)
+
+    def test_complete_occupancy_validation_rejects_sparse_maps(self):
+        # Import lazily because macarons_utils requires the full PyTorch3D
+        # runtime, whereas the position-only helpers themselves do not.
+        from macarons.utility.macarons_utils import Camera
+
+        camera = Camera.__new__(Camera)
+        camera.use_occupied_pose = True
+        camera.pose_is_occupied = {"[0, 0, 0]": True}
+        camera.pose_l, camera.pose_w, camera.pose_h = 2, 1, 1
+
+        self.assertTrue(
+            camera.check_if_pose_is_occupied("[0, 0, 0, 2, 0]", input_type="key")
+        )
+        with self.assertRaisesRegex(ValueError, "complete camera XYZ lattice"):
+            camera.validate_complete_occupied_pose()
+        camera.pose_is_occupied = {
+            "[0, 0, 0]": True,
+            "[1, 0, 0]": False,
+        }
+        camera.validate_complete_occupied_pose()
+        self.assertFalse(
+            camera.check_if_pose_is_occupied(
+                torch.tensor([1, 0, 0, 2, 0]), input_type="idx"
+            )
+        )
+
     def test_invalid_shapes_indices_and_partial_bundle_fail_closed(self):
         with self.assertRaisesRegex(ValueError, "position_shape"):
             PositionOnlySpec((6, 12), (5, 10))

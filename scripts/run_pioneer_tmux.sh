@@ -90,6 +90,20 @@ if [[ ! -f "$config_path" ]]; then
   printf 'config does not exist: %s\n' "$config_path" >&2
   exit 2
 fi
+if ! scene="$("$python_bin" -c '
+import json, sys
+scenes = json.load(open(sys.argv[1], encoding="utf-8")).get("test_scenes")
+if (
+    not isinstance(scenes, list)
+    or len(scenes) != 1
+    or not isinstance(scenes[0], str)
+    or not scenes[0].strip()
+):
+    raise SystemExit("config test_scenes must contain exactly one non-empty scene")
+print(scenes[0])
+' "$config_path")"; then
+  exit 2
+fi
 config_profile="$(
   "$python_bin" -c \
     'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("debug_profile", ""))' \
@@ -165,11 +179,17 @@ m = c.get("pioneer_planner_state_mode", "legacy_pose5d")
 r = c.get("pioneer_cubemap_rig_frame", "world" if m == "position_only" else "body")
 v = c.get("pioneer_cubemap_extrinsics_version", "")
 o = json.dumps(c.get("pioneer_canonical_orientation_indices"), separators=(",", ":"))
-print("|".join((m, r, v, o)))' \
+f = c.get("pioneer_filter_occupied_position_candidates", False)
+q = c.get("validation_require_complete_occupied_pose", False)
+if type(f) is not bool or type(q) is not bool:
+    raise SystemExit("occupied-position filter flags must be booleans")
+print("|".join((m, r, v, o, str(f).lower(), str(q).lower())))' \
     "$config_path"
 )"
 IFS='|' read -r planner_state_mode cubemap_rig_frame \
-  cubemap_extrinsics_version canonical_orientation_indices <<< "$planner_contract"
+  cubemap_extrinsics_version canonical_orientation_indices \
+  filter_occupied_position_candidates require_complete_occupied_pose \
+  <<< "$planner_contract"
 if [[ "$planner_state_mode" == "position_only" ]]; then
   planner_state_dimension=3
   raw_action_branches_per_parent=6
@@ -184,7 +204,7 @@ fi
   printf 'schema_version=1\n'
   printf 'planner=pioneer\n'
   printf 'observation_mode=cubemap6\n'
-  printf 'scene=eiffel\n'
+  printf 'scene=%s\n' "$scene"
   printf 'tmux_session=%s\n' "$session"
   printf 'gpu=%s\n' "$gpu"
   printf 'git_commit=%s\n' "$commit_sha"
@@ -200,6 +220,8 @@ fi
   printf 'canonical_orientation_indices=%s\n' "$canonical_orientation_indices"
   printf 'raw_action_branches_per_parent=%s\n' "$raw_action_branches_per_parent"
   printf 'orientation_action_branches_per_parent=%s\n' "$orientation_action_branches_per_parent"
+  printf 'filter_occupied_position_candidates=%s\n' "$filter_occupied_position_candidates"
+  printf 'require_complete_occupied_pose=%s\n' "$require_complete_occupied_pose"
   printf 'experiment_run_dir=%s\n' "$run_dir"
   printf 'python=%s\n' "$python_bin"
   printf 'command='

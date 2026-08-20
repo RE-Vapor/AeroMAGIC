@@ -178,6 +178,7 @@ class ExperimentMetricsTests(unittest.TestCase):
                 "generated_candidate_count": 5,
                 "valid_state_candidate_count": 5,
                 "observed_rejected_candidate_count": 0,
+                "occupied_rejected_candidate_count": 0,
                 "collision_rejected_candidate_count": 1,
                 "rendered_candidate_count": 4,
                 "retained_beam_count": 3,
@@ -192,15 +193,30 @@ class ExperimentMetricsTests(unittest.TestCase):
                 "raw_action_proposal_count": 18,
                 "translation_action_proposal_count": 18,
                 "orientation_action_proposal_count": 0,
-                "generated_candidate_count": 15,
+                "generated_candidate_count": 18,
                 "valid_state_candidate_count": 12,
                 "observed_rejected_candidate_count": 3,
+                "occupied_rejected_candidate_count": 3,
                 "collision_rejected_candidate_count": 11,
                 "rendered_candidate_count": 1,
                 "retained_beam_count": 1,
                 "search_seconds": 0.25,
             }
         )
+        with self.assertRaisesRegex(
+            ValueError,
+            "generated candidates must equal valid, observed-rejected, and occupied-rejected",
+        ):
+            recorder.record_planner_search_step(
+                {
+                    "generated_candidate_count": 1,
+                    "valid_state_candidate_count": 1,
+                    "observed_rejected_candidate_count": 0,
+                    "occupied_rejected_candidate_count": 1,
+                    "collision_rejected_candidate_count": 0,
+                    "rendered_candidate_count": 1,
+                }
+            )
         result = recorder.finalize(
             X_cam_history=np.array([[0, 0, 0]]),
             V_cam_history=np.zeros((1, 2)),
@@ -214,6 +230,7 @@ class ExperimentMetricsTests(unittest.TestCase):
         self.assertEqual(search["totals"]["parent_beam_count"], 4)
         self.assertEqual(search["totals"]["raw_action_proposal_count"], 24)
         self.assertEqual(search["totals"]["orientation_action_proposal_count"], 0)
+        self.assertEqual(search["totals"]["occupied_rejected_candidate_count"], 3)
         self.assertEqual(search["totals"]["rendered_candidate_count"], 5)
         self.assertEqual(
             result["trajectory"]["planner_state_indices"], [[2, 9, 3]]

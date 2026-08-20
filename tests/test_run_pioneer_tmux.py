@@ -115,9 +115,12 @@ class RunPioneerTmuxTests(unittest.TestCase):
             (test_configs / name).write_text(
                 json.dumps(
                     {
+                        "test_scenes": ["HKUST"],
                         "debug_profile": "pioneer-50",
                         "experiment_run_dir": run_dir,
                         "pioneer_planner_state_mode": "position_only",
+                        "pioneer_filter_occupied_position_candidates": True,
+                        "validation_require_complete_occupied_pose": True,
                         "pioneer_cubemap_rig_frame": "world",
                         "pioneer_cubemap_extrinsics_version": (
                             "pytorch3d-world-axes-v1"
@@ -217,9 +220,14 @@ class RunPioneerTmuxTests(unittest.TestCase):
             .splitlines()
         )
         self.assertEqual(manifest["debug_profile"], "pioneer-50")
+        self.assertEqual(manifest["scene"], "HKUST")
         self.assertEqual(manifest["expected_observations"], "50")
         self.assertEqual(manifest["expected_real_face_renders"], "300")
         self.assertEqual(manifest["planner_state_mode"], "position_only")
+        self.assertEqual(
+            manifest["filter_occupied_position_candidates"], "true"
+        )
+        self.assertEqual(manifest["require_complete_occupied_pose"], "true")
         self.assertEqual(manifest["planner_state_dimension"], "3")
         self.assertEqual(manifest["cubemap_rig_frame"], "world")
         self.assertEqual(

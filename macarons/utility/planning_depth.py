@@ -159,6 +159,19 @@ def validation_uses_occupied_pose(config: Any) -> bool:
     return value
 
 
+def validation_requires_complete_occupied_pose(config: Any) -> bool:
+    """Return whether the selected scene must cover the full camera lattice."""
+
+    value = _config_value(
+        config, "validation_require_complete_occupied_pose", False
+    )
+    if type(value) is not bool:
+        raise ValueError(
+            "validation_require_complete_occupied_pose must be a boolean."
+        )
+    return value
+
+
 def scene_texture_atlas_size(config: Any) -> int:
     """Return the validated per-face texture atlas resolution for scene loading.
 

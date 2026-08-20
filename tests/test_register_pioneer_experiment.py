@@ -267,6 +267,8 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
                         "pytorch3d-world-axes-v1"
                     ),
                     "pioneer_canonical_orientation_indices": [2, 0],
+                    "pioneer_filter_occupied_position_candidates": True,
+                    "validation_require_complete_occupied_pose": True,
                 }
             )
             expected_totals = {
@@ -275,8 +277,9 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
                 "translation_action_proposal_count": 24,
                 "orientation_action_proposal_count": 0,
                 "generated_candidate_count": 20,
-                "valid_state_candidate_count": 18,
+                "valid_state_candidate_count": 12,
                 "observed_rejected_candidate_count": 2,
+                "occupied_rejected_candidate_count": 6,
                 "collision_rejected_candidate_count": 3,
                 "rendered_candidate_count": 9,
                 "retained_beam_count": 6,
@@ -325,6 +328,14 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
             self.assertEqual(
                 record["pioneer"]["pioneer_canonical_orientation_indices"],
                 [2, 0],
+            )
+            self.assertTrue(
+                record["pioneer"][
+                    "pioneer_filter_occupied_position_candidates"
+                ]
+            )
+            self.assertTrue(
+                record["pioneer"]["validation_require_complete_occupied_pose"]
             )
             self.assertTrue(record["pioneer"]["pan11_contract_verified"])
             self.assertEqual(
@@ -387,6 +398,24 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
                 issue="PAN-11",
             )
             self.assertEqual(missing_counter["status"], "UNKNOWN")
+
+            metrics["planner_search"]["totals"]["rendered_candidate_count"] = 9
+            del metrics["planner_search"]["totals"][
+                "occupied_rejected_candidate_count"
+            ]
+            _write_json(online, metrics)
+            missing_occupancy_counter = register_experiment(
+                registry_json=registry_json,
+                registry_md=registry_md,
+                run_dir=run_dir,
+                online_metrics=online,
+                experiment_id="PAN-11-PIONEER-EIFFEL-MISSING-OCCUPANCY-COUNTER",
+                scientific_run_commit=BASE_COMMIT,
+                final_branch_commit=FINAL_COMMIT,
+                status="PASS",
+                issue="PAN-11",
+            )
+            self.assertEqual(missing_occupancy_counter["status"], "UNKNOWN")
 
     def test_cli_issue_defaults_to_pan10_and_accepts_pan11(self):
         required = [

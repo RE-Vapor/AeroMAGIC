@@ -16,6 +16,7 @@ from ..utility.planning_depth import (
     scene_texture_atlas_size,
     set_planning_seeds,
     update_proxy_state,
+    validation_requires_complete_occupied_pose,
     validation_uses_occupied_pose,
 )
 from ..utility.scene_transform import (
@@ -528,7 +529,8 @@ def setup_test_camera(params,
                       training_frames_path,
                       mirrored_scene=False,
                       mirrored_axis=None,
-                      rgb_provider=None):
+                      rgb_provider=None,
+                      require_complete_occupied_pose=False):
     """
     Setup the camera used for prediction.
 
@@ -571,6 +573,9 @@ def setup_test_camera(params,
                     save_dir_path=training_frames_path,
                     mirrored_scene=mirrored_scene,
                     mirrored_axis=mirrored_axis)  # Change or remove this path during inference or test
+
+    if require_complete_occupied_pose:
+        camera.validate_complete_occupied_pose()
 
 
     state_mode = _pioneer_planner_state_mode(params)
@@ -956,6 +961,7 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                 "generated_candidate_count": 0,
                 "valid_state_candidate_count": 0,
                 "observed_rejected_candidate_count": 0,
+                "occupied_rejected_candidate_count": 0,
                 "collision_rejected_candidate_count": 0,
                 "rendered_candidate_count": 0,
                 "retained_beam_count": 0,
@@ -982,14 +988,36 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                     neighbor_indices = position_neighbors(
                         beam["current_pose_idx"], position_spec
                     )
-                    valid_neighbors = position_state.valid_neighbors(
-                        beam["current_pose_idx"]
+
+                    def position_is_available(row):
+                        return not camera.check_if_pose_is_occupied(
+                            camera_pose_index(row)
+                        )
+
+                    filter_occupied = getattr(
+                        params, "pioneer_filter_occupied_position_candidates", False
                     )
+                    available_neighbor_indices = (
+                        [
+                            row
+                            for row in neighbor_indices
+                            if position_is_available(row)
+                        ]
+                        if filter_occupied
+                        else list(neighbor_indices)
+                    )
+                    valid_neighbors = position_state.valid_neighbors(
+                        beam["current_pose_idx"],
+                        is_available=(position_is_available if filter_occupied else None),
+                    )
+                    search_step_metrics[
+                        "occupied_rejected_candidate_count"
+                    ] += len(neighbor_indices) - len(available_neighbor_indices)
                     observed_rejected = (
-                        len(neighbor_indices) - len(valid_neighbors)
+                        len(available_neighbor_indices) - len(valid_neighbors)
                         if any(
                             not position_state.is_observed(row)
-                            for row in neighbor_indices
+                            for row in available_neighbor_indices
                         )
                         else 0
                     )
@@ -1487,8 +1515,40 @@ def run_magician_test(params_name,
         ("pioneer_cubemap_rig_frame", None),
         ("pioneer_cubemap_extrinsics_version", None),
         ("pioneer_canonical_orientation_indices", None),
+        ("pioneer_filter_occupied_position_candidates", False),
     ):
         setattr(params, name, getattr(test_params, name, default))
+    if type(params.pioneer_filter_occupied_position_candidates) is not bool:
+        raise ValueError(
+            "pioneer_filter_occupied_position_candidates must be a boolean."
+        )
+    if (
+        params.pioneer_filter_occupied_position_candidates
+        and params.pioneer_planner_state_mode != "position_only"
+    ):
+        raise ValueError(
+            "occupied position-candidate filtering requires "
+            "pioneer_planner_state_mode=position_only"
+        )
+    require_complete_occupied_pose = (
+        validation_requires_complete_occupied_pose(test_params)
+    )
+    if (
+        params.pioneer_filter_occupied_position_candidates
+        and not require_complete_occupied_pose
+    ):
+        raise ValueError(
+            "occupied position-candidate filtering requires "
+            "validation_require_complete_occupied_pose=true"
+        )
+    if (
+        require_complete_occupied_pose
+        and not validation_uses_occupied_pose(test_params)
+    ):
+        raise ValueError(
+            "complete occupied-pose validation requires "
+            "validation_use_occupied_pose=true"
+        )
     if _uses_pioneer_observation(params):
         state_mode = _pioneer_planner_state_mode(params)
         if params.pioneer_cubemap_rig_frame is None:
@@ -1673,7 +1733,10 @@ def run_magician_test(params_name,
                 camera = setup_test_camera(params, mesh, intersector, start_cam_idx, settings, occupied_pose_data,
                                            device, training_frames_path,
                                            mirrored_scene=mirrored_scene, mirrored_axis=mirrored_axis,
-                                           rgb_provider=rgb_provider)
+                                           rgb_provider=rgb_provider,
+                                           require_complete_occupied_pose=(
+                                               require_complete_occupied_pose
+                                           ))
                 if metrics_recorder is not None and _uses_pioneer_observation(params):
                     audit_spec = getattr(camera, "pioneer_position_spec", None)
                     if audit_spec is None:

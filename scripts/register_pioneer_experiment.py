@@ -553,6 +553,20 @@ def build_record(
         ("planner_search", "canonical_orientation_indices"),
         ("pioneer_canonical_orientation_indices",),
     )
+    filter_occupied_position_candidates = _as_bool(
+        _pick(
+            sources,
+            ("run", "pioneer_filter_occupied_position_candidates"),
+            ("pioneer_filter_occupied_position_candidates",),
+        )
+    )
+    require_complete_occupied_pose = _as_bool(
+        _pick(
+            sources,
+            ("run", "validation_require_complete_occupied_pose"),
+            ("validation_require_complete_occupied_pose",),
+        )
+    )
     planner_search = (
         metrics.get("planner_search")
         if isinstance(metrics.get("planner_search"), Mapping)
@@ -597,6 +611,11 @@ def build_record(
         "rendered_candidate_count",
         "retained_beam_count",
     )
+    occupied_rejections = _as_int(
+        planner_search_totals.get("occupied_rejected_candidate_count")
+    )
+    if filter_occupied_position_candidates is True:
+        required_search_count_fields += ("occupied_rejected_candidate_count",)
     search_counts_verified = all(
         type(planner_search_totals.get(field)) is int
         and planner_search_totals[field] >= 0
@@ -607,6 +626,19 @@ def build_record(
         not isinstance(search_seconds, bool)
         and isinstance(search_seconds, (int, float))
         and search_seconds >= 0
+    )
+    effective_occupied_rejections = (
+        occupied_rejections if occupied_rejections is not None else 0
+    )
+    search_closure_verified = bool(
+        search_counts_verified
+        and planner_search_totals["generated_candidate_count"]
+        == planner_search_totals["valid_state_candidate_count"]
+        + planner_search_totals["observed_rejected_candidate_count"]
+        + effective_occupied_rejections
+        and planner_search_totals["valid_state_candidate_count"]
+        == planner_search_totals["collision_rejected_candidate_count"]
+        + planner_search_totals["rendered_candidate_count"]
     )
     pan11_contract_verified = bool(
         issue == "PAN-11"
@@ -626,7 +658,15 @@ def build_record(
         and planner_search.get("cubemap_extrinsics_version")
         == cubemap_extrinsics_version
         and search_counts_verified
+        and search_closure_verified
         and search_seconds_verified
+        and (
+            filter_occupied_position_candidates is not True
+            or (
+                require_complete_occupied_pose is True
+                and occupied_rejections is not None
+            )
+        )
         and rendered_candidates is not None
         and imagined_candidate_bundles is not None
         and rendered_candidates == imagined_candidate_bundles
@@ -669,6 +709,12 @@ def build_record(
                 "pioneer_cubemap_rig_frame": cubemap_rig_frame,
                 "pioneer_cubemap_extrinsics_version": cubemap_extrinsics_version,
                 "pioneer_canonical_orientation_indices": canonical_orientation_indices,
+                "pioneer_filter_occupied_position_candidates": (
+                    filter_occupied_position_candidates
+                ),
+                "validation_require_complete_occupied_pose": (
+                    require_complete_occupied_pose
+                ),
             }
         )
     normalized_hash = _canonical_sha256(normalized_config)
@@ -761,6 +807,12 @@ def build_record(
                     "planner_state_dimension": planner_state_dimension,
                     "pioneer_cubemap_rig_frame": cubemap_rig_frame,
                     "pioneer_cubemap_extrinsics_version": cubemap_extrinsics_version,
+                    "pioneer_filter_occupied_position_candidates": (
+                        filter_occupied_position_candidates
+                    ),
+                    "validation_require_complete_occupied_pose": (
+                        require_complete_occupied_pose
+                    ),
                 }
                 if issue == "PAN-11"
                 else {}
@@ -804,6 +856,12 @@ def build_record(
                     "pioneer_cubemap_rig_frame": cubemap_rig_frame,
                     "pioneer_cubemap_extrinsics_version": cubemap_extrinsics_version,
                     "pioneer_canonical_orientation_indices": canonical_orientation_indices,
+                    "pioneer_filter_occupied_position_candidates": (
+                        filter_occupied_position_candidates
+                    ),
+                    "validation_require_complete_occupied_pose": (
+                        require_complete_occupied_pose
+                    ),
                     "planner_search": {
                         "state_mode": planner_search.get("state_mode"),
                         "state_dimension": _as_int(
