@@ -17,18 +17,18 @@ from make_pioneer_preview import FACE_NAMES, generate_preview  # noqa: E402
 
 
 class MakePioneerPreviewTests(unittest.TestCase):
-    def _fixture(self, temporary):
+    def _fixture(self, temporary, bundle_count=3):
         root = Path(temporary)
         frames = root / "memory" / "training" / "0" / "frames"
         images = frames.parent / "imgs"
         frames.mkdir(parents=True)
         bundles = []
-        for bundle_id in range(3):
+        for bundle_id in range(bundle_count):
             image_dir = images / f"{bundle_id:06d}"
             image_dir.mkdir(parents=True)
             for face_index, face in enumerate(FACE_NAMES):
                 rgb = np.zeros((16, 16, 3), dtype=np.uint8)
-                rgb[:, :, 0] = 30 * bundle_id
+                rgb[:, :, 0] = (30 * bundle_id) % 256
                 rgb[:, :, 1] = 20 * face_index
                 rgb[:, :, 2] = 100
                 Image.fromarray(rgb).save(image_dir / f"{face}.png")
@@ -53,19 +53,21 @@ class MakePioneerPreviewTests(unittest.TestCase):
                 "pioneer_face_size": 16,
             },
             "coverage": [
-                {"normalized": 0.1},
-                {"normalized": 0.2},
-                {"normalized": 0.3},
+                {"normalized": 0.1 + 0.2 * bundle_id / max(1, bundle_count - 1)}
+                for bundle_id in range(bundle_count)
             ],
             "trajectory": {
-                "positions": [[0, 1, 0], [1, 1, 0], [1, 1, 1]],
+                "positions": [
+                    [float(bundle_id), 1.0, float(bundle_id % 5)]
+                    for bundle_id in range(bundle_count)
+                ],
                 "path_length_scene_units": 2.0,
             },
             "latency": {"trajectory_seconds": 12.5},
             "cuda": {"peak_reserved_mib": 1000.0},
             "pioneer_observation": {
-                "bundle_count": 3,
-                "real_face_render_count": 18,
+                "bundle_count": bundle_count,
+                "real_face_render_count": 6 * bundle_count,
                 "imagined_candidate_face_render_count": 54,
                 "bundles": bundles,
             },
@@ -116,6 +118,7 @@ class MakePioneerPreviewTests(unittest.TestCase):
                 self.assertGreater(image.width, 500)
                 self.assertGreater(image.height, 300)
             self.assertEqual(sidecar["summary"]["bundle_count"], 3)
+            self.assertEqual(sidecar["summary"]["displayed_bundle_ids"], [0, 1, 2])
             self.assertEqual(sidecar["summary"]["face_count"], 18)
             self.assertEqual(sidecar["summary"]["reconstructed_point_count"], 4)
             self.assertEqual(sidecar["sources"]["capture_image_count"], 18)
@@ -132,16 +135,36 @@ class MakePioneerPreviewTests(unittest.TestCase):
                 hashlib.sha256((images / "000000" / "front.png").read_bytes()).hexdigest(),
             )
 
-    def test_rejects_missing_face_image(self):
+    def test_long_preview_samples_rows_but_validates_every_face(self):
         with tempfile.TemporaryDirectory() as temporary:
-            metrics_path, lmdb_path, images = self._fixture(temporary)
-            (images / "000002" / "down.png").unlink()
+            metrics_path, lmdb_path, images = self._fixture(temporary, bundle_count=50)
+            output = Path(temporary) / "pioneer-50.png"
+            sidecar = generate_preview(
+                metrics_path=metrics_path,
+                lmdb_path=lmdb_path,
+                output_path=output,
+                max_points=100,
+                dpi=20,
+            )
+            self.assertEqual(sidecar["summary"]["bundle_count"], 50)
+            self.assertEqual(sidecar["summary"]["face_count"], 300)
+            self.assertEqual(sidecar["sources"]["capture_image_count"], 300)
+            self.assertEqual(sidecar["summary"]["displayed_bundle_count"], 6)
+            self.assertEqual(
+                sidecar["summary"]["displayed_bundle_ids"],
+                [0, 9, 19, 29, 39, 49],
+            )
+            with Image.open(output) as image:
+                self.assertLess(image.height, 5000)
+
+            (images / "000007" / "down.png").unlink()
             with self.assertRaisesRegex(FileNotFoundError, "missing PIONEER face images"):
                 generate_preview(
                     metrics_path=metrics_path,
                     lmdb_path=lmdb_path,
-                    output_path=Path(temporary) / "preview.png",
-                    dpi=40,
+                    output_path=Path(temporary) / "invalid.png",
+                    max_points=100,
+                    dpi=20,
                 )
 
 

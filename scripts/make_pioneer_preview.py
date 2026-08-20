@@ -21,6 +21,7 @@ from PIL import Image
 
 
 FACE_NAMES = ("front", "back", "left", "right", "up", "down")
+DEFAULT_MAX_BUNDLE_ROWS = 6
 
 
 def _read_json(path: Path) -> Mapping[str, Any]:
@@ -152,6 +153,7 @@ def generate_preview(
     output_path: Path,
     lmdb_key: Optional[str] = None,
     max_points: int = 25000,
+    max_bundle_rows: int = DEFAULT_MAX_BUNDLE_ROWS,
     dpi: int = 120,
 ) -> Mapping[str, Any]:
     """Validate completed artifacts and render a single comprehensive PNG."""
@@ -161,8 +163,8 @@ def generate_preview(
     output_path = output_path.expanduser().resolve()
     if output_path.suffix.lower() != ".png":
         raise ValueError("preview output must use a .png suffix")
-    if max_points <= 0 or dpi <= 0:
-        raise ValueError("max_points and dpi must be positive")
+    if max_points <= 0 or max_bundle_rows <= 0 or dpi <= 0:
+        raise ValueError("max_points, max_bundle_rows, and dpi must be positive")
 
     metrics = _read_json(metrics_path)
     if str(metrics.get("planner", "")).lower() != "pioneer":
@@ -176,6 +178,13 @@ def generate_preview(
         raise ValueError("metrics scene and start_index are required")
 
     bundles, images_root, image_rows = _resolve_bundle_images(metrics)
+    if len(bundles) > 1 and max_bundle_rows < 2:
+        raise ValueError(
+            "max_bundle_rows must be at least two for a multi-bundle run"
+        )
+    display_indices = _sample_indices(len(bundles), max_bundle_rows)
+    display_index_set = set(int(index) for index in display_indices)
+    displayed_bundles = [bundles[int(index)] for index in display_indices]
     key = lmdb_key or f"{scene}/{start_index}"
     trajectory = _load_lmdb(lmdb_path, key)
     points = _as_xyz(trajectory.get("points"), "LMDB points")
@@ -195,7 +204,7 @@ def generate_preview(
 
     face_size = int(run.get("pioneer_face_size") or 0)
     loaded_images: list[list[np.ndarray]] = []
-    for row in image_rows:
+    for row_index, row in enumerate(image_rows):
         loaded_row = []
         for path in row:
             image = plt.imread(path)
@@ -203,22 +212,26 @@ def generate_preview(
                 raise ValueError(f"face image must be RGB/RGBA: {path}")
             if face_size and image.shape[:2] != (face_size, face_size):
                 raise ValueError(f"face image size disagrees with metrics: {path}")
-            loaded_row.append(image[:, :, :3])
-        loaded_images.append(loaded_row)
+            if row_index in display_index_set:
+                loaded_row.append(image[:, :, :3])
+        if row_index in display_index_set:
+            loaded_images.append(loaded_row)
 
     plt.style.use("dark_background")
     figure = plt.figure(
-        figsize=(24, 2.65 * len(bundles) + 7.0),
+        figsize=(24, 2.65 * len(displayed_bundles) + 7.0),
         facecolor="#0d1015",
     )
     grid = figure.add_gridspec(
-        len(bundles) + 2,
+        len(displayed_bundles) + 2,
         12,
-        height_ratios=[2.4] * len(bundles) + [3.0, 3.0],
+        height_ratios=[2.4] * len(displayed_bundles) + [3.0, 3.0],
         hspace=0.3,
         wspace=0.12,
     )
-    for row_index, (bundle, images) in enumerate(zip(bundles, loaded_images)):
+    for row_index, (bundle_index, bundle, images) in enumerate(
+        zip(display_indices, displayed_bundles, loaded_images)
+    ):
         point_counts = list(bundle.get("face_point_counts") or [None] * 6)
         for face_index, (face, image) in enumerate(zip(FACE_NAMES, images)):
             axis = figure.add_subplot(
@@ -233,7 +246,7 @@ def generate_preview(
                 axis.text(
                     -0.08,
                     0.5,
-                    f"obs {row_index + 1}\nbundle {int(bundle['bundle_id']):06d}",
+                    f"obs {int(bundle_index) + 1}\nbundle {int(bundle['bundle_id']):06d}",
                     transform=axis.transAxes,
                     rotation=90,
                     va="center",
@@ -246,7 +259,7 @@ def generate_preview(
     sampled_points = points[sample]
     sampled_colors = colors[sample]
 
-    top_axis = figure.add_subplot(grid[len(bundles) :, 0:4])
+    top_axis = figure.add_subplot(grid[len(displayed_bundles) :, 0:4])
     top_axis.scatter(
         sampled_points[:, 0],
         sampled_points[:, 2],
@@ -265,7 +278,9 @@ def generate_preview(
     top_axis.grid(alpha=0.15)
     top_axis.legend()
 
-    spatial_axis = figure.add_subplot(grid[len(bundles) :, 4:8], projection="3d")
+    spatial_axis = figure.add_subplot(
+        grid[len(displayed_bundles) :, 4:8], projection="3d"
+    )
     spatial_axis.scatter(
         sampled_points[:, 0],
         sampled_points[:, 2],
@@ -282,7 +297,7 @@ def generate_preview(
     spatial_axis.set_title("Reconstructed cloud (oblique)")
     spatial_axis.set_axis_off()
 
-    coverage_axis = figure.add_subplot(grid[len(bundles) :, 8:12])
+    coverage_axis = figure.add_subplot(grid[len(displayed_bundles) :, 8:12])
     observation_ids = np.arange(1, len(coverage) + 1)
     coverage_percent = 100.0 * coverage
     coverage_axis.plot(observation_ids, coverage_percent, "-o", color="#68ddff", lw=2.6)
@@ -364,6 +379,10 @@ def generate_preview(
             "scene": scene,
             "start_index": start_index,
             "bundle_count": len(bundles),
+            "displayed_bundle_count": len(displayed_bundles),
+            "displayed_bundle_ids": [
+                int(bundle["bundle_id"]) for bundle in displayed_bundles
+            ],
             "face_count": len(image_paths),
             "face_names": list(FACE_NAMES),
             "reconstructed_point_count": len(points),
@@ -385,6 +404,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--lmdb-key")
     parser.add_argument("--max-points", type=int, default=25000)
+    parser.add_argument(
+        "--max-bundle-rows",
+        type=int,
+        default=DEFAULT_MAX_BUNDLE_ROWS,
+        help=(
+            "maximum uniformly sampled cubemap rows to draw; all bundle images "
+            "are still decoded, validated, and hashed"
+        ),
+    )
     parser.add_argument("--dpi", type=int, default=120)
     return parser
 
@@ -397,6 +425,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         output_path=args.output,
         lmdb_key=args.lmdb_key,
         max_points=args.max_points,
+        max_bundle_rows=args.max_bundle_rows,
         dpi=args.dpi,
     )
     print(json.dumps(result["preview"], sort_keys=True))

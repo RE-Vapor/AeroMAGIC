@@ -1,0 +1,34 @@
+{
+  "numGPU": 0,
+  "dataset_path": "./data/Macarons++",
+  "test_scenes": [
+    "eiffel"
+  ],
+  "params_name": "macarons_default_training_config.json",
+  "model_name": "trained_macarons.pth",
+  "results_json_name": "pan10_pioneer_eiffel_50step_a1_results.json",
+  "test_resolution": 0.05,
+  "use_perfect_depth_map": true,
+  "kind_depth_map": "GT",
+  "compute_collision": false,
+  "load_json": false,
+  "random_seed": 8,
+  "torch_seed": 9,
+  "lmdb_dir_name": "pan10_pioneer_eiffel_50step_a1_lmdb",
+  "validation_memory_dir_name": "pan10_pioneer_eiffel_50step_a1_memory",
+  "beam_width": 3,
+  "beam_steps": 3,
+  "debug_profile": "pioneer-50",
+  "planning_observation_mode": "cubemap6",
+  "pioneer_face_size": 256,
+  "pioneer_face_fov_degrees": 90.0,
+  "pioneer_voxel_size": 0.05,
+  "pioneer_remove_rotation_only_candidates": true,
+  "experiment_metrics_enabled": true,
+  "experiment_run_id": "PAN-10-pioneer-eiffel-cubemap6-50step-a1",
+  "experiment_run_dir": "../experiments/runs/integration-all-experiments/PAN-10-pioneer-eiffel-50step/attempt-001",
+  "experiment_metrics_dir": "../experiments/runs/integration-all-experiments/PAN-10-pioneer-eiffel-50step/attempt-001/metrics",
+  "da3_scene_units_per_meter": {
+    "eiffel": 0.2641176363636364
+  }
+}

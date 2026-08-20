@@ -16,7 +16,8 @@ run_inside_tmux() {
   local run_dir="$2"
   local python_bin="$3"
   local config_name="$4"
-  local repo_root="$5"
+  local debug_profile="$5"
+  local repo_root="$6"
 
   cd "$repo_root"
   printf 'started_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$run_dir/status.txt"
@@ -25,7 +26,7 @@ run_inside_tmux() {
   CUDA_VISIBLE_DEVICES="$gpu" PYTHONUNBUFFERED=1 "$python_bin" \
     test_magician_planning.py \
     -c "$config_name" \
-    --debug-profile quick \
+    --debug-profile "$debug_profile" \
     2>&1 | tee "$run_dir/run.log"
   local return_code="${PIPESTATUS[0]}"
   set -e
@@ -34,8 +35,10 @@ run_inside_tmux() {
 
 if [[ "${1:-}" == "--inside-tmux" ]]; then
   shift
-  if [[ $# -ne 5 ]]; then
-    printf 'inside-tmux requires GPU RUN_DIR PYTHON CONFIG_NAME REPO_ROOT\n' >&2
+  if [[ $# -eq 5 ]]; then
+    set -- "$1" "$2" "$3" "$4" quick "$5"
+  elif [[ $# -ne 6 ]]; then
+    printf 'inside-tmux requires GPU RUN_DIR PYTHON CONFIG_NAME DEBUG_PROFILE REPO_ROOT\n' >&2
     exit 2
   fi
   pioneer_status_file="$2/status.txt"
@@ -44,8 +47,8 @@ if [[ "${1:-}" == "--inside-tmux" ]]; then
   exit $?
 fi
 
-if [[ $# -lt 3 || $# -gt 4 ]]; then
-  printf 'usage: %s SESSION GPU RUN_DIR [CONFIG_NAME]\n' "$0" >&2
+if [[ $# -lt 3 || $# -gt 5 ]]; then
+  printf 'usage: %s SESSION GPU RUN_DIR [CONFIG_NAME] [DEBUG_PROFILE]\n' "$0" >&2
   exit 2
 fi
 
@@ -53,6 +56,7 @@ session="$1"
 gpu="$2"
 run_dir="$3"
 config_name="${4:-$DEFAULT_CONFIG}"
+debug_profile="${5:-}"
 python_bin="${PIONEER_PYTHON:-$DEFAULT_PYTHON}"
 
 if [[ ! "$session" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -81,16 +85,78 @@ if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then
   printf 'refusing to run from a dirty worktree\n' >&2
   exit 2
 fi
-if [[ ! -f "$repo_root/configs/test/$config_name" ]]; then
-  printf 'config does not exist: %s\n' "$repo_root/configs/test/$config_name" >&2
+config_path="$repo_root/configs/test/$config_name"
+if [[ ! -f "$config_path" ]]; then
+  printf 'config does not exist: %s\n' "$config_path" >&2
   exit 2
+fi
+config_profile="$(
+  "$python_bin" -c \
+    'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("debug_profile", ""))' \
+    "$config_path"
+)"
+if [[ -z "$debug_profile" ]]; then
+  debug_profile="${config_profile:-quick}"
+elif [[ -n "$config_profile" && "$debug_profile" != "$config_profile" ]]; then
+  printf 'DEBUG_PROFILE %s does not match config debug_profile %s\n' \
+    "$debug_profile" "$config_profile" >&2
+  exit 2
+fi
+if [[ ! "$debug_profile" =~ ^[a-z][a-z0-9-]*$ ]]; then
+  printf 'DEBUG_PROFILE must use lowercase letters, digits, and hyphens\n' >&2
+  exit 2
+fi
+profile_path="$repo_root/configs/debug/$debug_profile.json"
+if [[ ! -f "$profile_path" ]]; then
+  printf 'debug profile does not exist: %s\n' "$profile_path" >&2
+  exit 2
+fi
+
+declared_run_dir="$(
+  "$python_bin" -c \
+    'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("experiment_run_dir", ""))' \
+    "$config_path"
+)"
+canonical_run_dir="$(
+  "$python_bin" -c \
+    'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' \
+    "$run_dir"
+)"
+if [[ -n "$declared_run_dir" ]]; then
+  canonical_declared_run_dir="$(
+    "$python_bin" -c \
+      'from pathlib import Path; import sys; print((Path(sys.argv[1]) / sys.argv[2]).resolve())' \
+      "$repo_root" "$declared_run_dir"
+  )"
+  if [[ "$canonical_run_dir" != "$canonical_declared_run_dir" ]]; then
+    printf 'RUN_DIR %s does not match config experiment_run_dir %s\n' \
+      "$canonical_run_dir" "$canonical_declared_run_dir" >&2
+    exit 2
+  fi
+fi
+
+if [[ -e "$run_dir" ]]; then
+  if [[ ! -d "$run_dir" ]]; then
+    printf 'run path exists and is not a directory: %s\n' "$run_dir" >&2
+    exit 2
+  fi
+  if [[ -n "$(find "$run_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    printf 'refusing to reuse non-empty run directory: %s\n' "$run_dir" >&2
+    exit 2
+  fi
 fi
 
 mkdir -p "$run_dir"
 run_dir="$(cd "$run_dir" && pwd)"
 script_path="$repo_root/scripts/run_pioneer_tmux.sh"
 commit_sha="$(git -C "$repo_root" rev-parse HEAD)"
-config_sha="$(sha256sum "$repo_root/configs/test/$config_name" | awk '{print $1}')"
+config_sha="$(sha256sum "$config_path" | awk '{print $1}')"
+expected_observations="$(
+  "$python_bin" -c \
+    'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["overrides"]["experiment_budget_observations"])' \
+    "$profile_path"
+)"
+expected_real_face_renders="$((expected_observations * 6))"
 
 {
   printf 'schema_version=1\n'
@@ -102,14 +168,18 @@ config_sha="$(sha256sum "$repo_root/configs/test/$config_name" | awk '{print $1}
   printf 'git_commit=%s\n' "$commit_sha"
   printf 'config=%s\n' "$config_name"
   printf 'config_sha256=%s\n' "$config_sha"
+  printf 'debug_profile=%s\n' "$debug_profile"
+  printf 'expected_observations=%s\n' "$expected_observations"
+  printf 'expected_real_face_renders=%s\n' "$expected_real_face_renders"
+  printf 'experiment_run_dir=%s\n' "$run_dir"
   printf 'python=%s\n' "$python_bin"
   printf 'command='
-  printf '%q ' "$python_bin" test_magician_planning.py -c "$config_name" --debug-profile quick
+  printf '%q ' "$python_bin" test_magician_planning.py -c "$config_name" --debug-profile "$debug_profile"
   printf '\n'
 } > "$run_dir/manifest.txt"
 
 printf -v tmux_command '%q ' \
   "$script_path" --inside-tmux "$gpu" "$run_dir" "$python_bin" \
-  "$config_name" "$repo_root"
+  "$config_name" "$debug_profile" "$repo_root"
 tmux new-session -d -s "$session" -c "$repo_root" "$tmux_command"
 printf 'started tmux session %s; artifacts: %s\n' "$session" "$run_dir"

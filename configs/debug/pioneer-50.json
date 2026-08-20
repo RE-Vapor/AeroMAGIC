@@ -1,0 +1,18 @@
+{
+  "name": "pioneer-50",
+  "description": "Fifty-observation PIONEER traversal with the quick profile's bounded proxy and beam settings.",
+  "debug_only": true,
+  "coverage_comparable": false,
+  "output_suffix": "debug_pioneer50",
+  "overrides": {
+    "validation_n_proxy_points": 100000,
+    "beam_width": 3,
+    "beam_steps": 3,
+    "validation_n_interpolation_steps": 1,
+    "validation_n_poses_in_trajectory": 49,
+    "experiment_budget_observations": 50,
+    "validation_max_start_positions": 1,
+    "random_seed": 8,
+    "torch_seed": 9
+  }
+}

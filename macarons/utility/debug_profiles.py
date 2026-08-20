@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 
-DEBUG_PROFILE_NAMES = ("quick", "magician", "large-scene")
+DEBUG_PROFILE_NAMES = ("quick", "magician", "large-scene", "pioneer-50")
 
 _PROFILE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
 _OUTPUT_SUFFIX_PATTERN = re.compile(r"^[a-z0-9_]+$")
