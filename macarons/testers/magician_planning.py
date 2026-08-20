@@ -222,6 +222,7 @@ def _render_pioneer_gaussian_visibility(
     camera,
     params,
     device,
+    render_kind,
     metrics_recorder=None,
 ):
     """Render a full-sphere imagined observation and OR visibility once."""
@@ -265,7 +266,9 @@ def _render_pioneer_gaussian_visibility(
         )
         depth_maps[face_name] = rendered_depth[0]
     if metrics_recorder is not None:
-        metrics_recorder.record_imagined_bundle_render(face_renders=len(depth_maps))
+        metrics_recorder.record_imagined_bundle_render(
+            face_renders=len(depth_maps), kind=render_kind
+        )
     return visible_union_from_depth_maps(
         points=points,
         face_cameras=face_cameras,
@@ -681,6 +684,7 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                         camera=camera,
                         params=params,
                         device=device,
+                        render_kind="history",
                         metrics_recorder=metrics_recorder,
                     )
                 else:
@@ -966,6 +970,7 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                                 camera=camera,
                                 params=params,
                                 device=device,
+                                render_kind="candidate",
                                 metrics_recorder=metrics_recorder,
                             )
                             coverage_gain = (
@@ -1045,6 +1050,8 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                 print("No valid candidates found!")
                 if cross_tile_enabled:
                     planning_diagnostic['beam_steps'].append(step_diagnostic)
+                if not any(beam["trajectory"] for beam in beams):
+                    beams = []
                 break
 
             # coverage gains based on rgb imgs
@@ -1205,6 +1212,11 @@ def run_magician_test(params_name,
             raise ValueError(
                 "PIONEER cubemap6 pilot currently requires use_perfect_depth_map=true."
             )
+        if params.n_interpolation_steps != 1:
+            raise ValueError(
+                "PIONEER cubemap6 currently requires n_interpolation_steps=1 "
+                "so every captured bundle is processed exactly once."
+            )
 
     if dataset_path is None:
         params.data_path = data_path
@@ -1328,13 +1340,8 @@ def run_magician_test(params_name,
                                                                                        mirrored_axis=mirrored_axis,
                                                                                        test_resolution=test_resolution)
 
-                # clear_folder(training_frames_path)
-                camera = setup_test_camera(params, mesh, intersector, start_cam_idx, settings, occupied_pose_data,
-                                           device, training_frames_path,
-                                           mirrored_scene=mirrored_scene, mirrored_axis=mirrored_axis,
-                                           rgb_provider=rgb_provider)
-                print(camera.X_cam_history[0], camera.V_cam_history[0])
-
+                # Start telemetry before the initial real observation so its
+                # six face renders and CUDA peak are included.
                 metrics_recorder = create_trajectory_metrics_recorder(
                     test_params,
                     planner=(
@@ -1345,6 +1352,13 @@ def run_magician_test(params_name,
                     capture_dir=training_frames_path,
                     device=device,
                 )
+
+                # clear_folder(training_frames_path)
+                camera = setup_test_camera(params, mesh, intersector, start_cam_idx, settings, occupied_pose_data,
+                                           device, training_frames_path,
+                                           mirrored_scene=mirrored_scene, mirrored_axis=mirrored_axis,
+                                           rgb_provider=rgb_provider)
+                print(camera.X_cam_history[0], camera.V_cam_history[0])
 
                 coverage_evolution, X_cam_history, V_cam_history, full_pc, full_pc_colors, full_pc_idx = compute_magician_trajectory(params, macarons,
                                                                                       camera,

@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import os
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Tuple
 
@@ -86,6 +87,10 @@ class PerspectiveFaceObservation:
             value = value.detach()
             return value.cpu() if cpu else value
 
+        metadata = {
+            key: maybe_cpu(value) if torch.is_tensor(value) else value
+            for key, value in self.metadata.items()
+        }
         return {
             "rgb": maybe_cpu(self.rgb),
             "zbuf": maybe_cpu(self.depth_z),
@@ -98,7 +103,7 @@ class PerspectiveFaceObservation:
             "fov_degrees": float(self.fov_degrees),
             "image_height": self.image_height,
             "image_width": self.image_width,
-            **self.metadata,
+            **metadata,
         }
 
 
@@ -243,7 +248,9 @@ def cubemap_pixel_intrinsics(
         raise ValueError("Cubemap faces must be at least 2x2 pixels.")
     if image_height != image_width:
         raise ValueError("Cubemap perspective faces must be square.")
-    focal = 0.5 * image_width / math.tan(math.radians(fov_degrees) / 2.0)
+    focal = 0.5 * (image_width - 1.0) / math.tan(
+        math.radians(fov_degrees) / 2.0
+    )
     cx = (image_width - 1.0) / 2.0
     cy = (image_height - 1.0) / 2.0
     return torch.tensor(
@@ -331,13 +338,17 @@ def capture_cubemap_observation(
         ambient_light_intensity,
         max_faces_per_bin,
     )
-    K = cubemap_pixel_intrinsics(
+    K_pixel = cubemap_pixel_intrinsics(
         face_size,
         face_size,
         device=device,
         dtype=center.dtype,
     )
     bundle_id = int(camera.n_frames_captured)
+    capture_timestamp_unix_ns = time.time_ns()
+    capture_timestamp_utc = datetime.fromtimestamp(
+        capture_timestamp_unix_ns / 1_000_000_000, tz=timezone.utc
+    ).isoformat().replace("+00:00", "Z")
     _synchronize_if_cuda(device)
     capture_started = time.perf_counter()
     faces = []
@@ -353,6 +364,14 @@ def capture_cubemap_observation(
             rgb = rgb_chw.permute(0, 2, 3, 1).contiguous()
             depth = fragments.zbuf.contiguous()
             valid_mask = torch.isfinite(depth) & (depth > 0.0)
+            pytorch3d_projection = (
+                face_camera.get_projection_transform().get_matrix().clone()
+            )
+            axis_conversion = torch.diag(
+                torch.tensor([-1.0, -1.0, 1.0], device=device, dtype=center.dtype)
+            )
+            R_opencv = (face_camera.R[0] @ axis_conversion).transpose(0, 1)
+            T_opencv = (face_camera.T[0] @ axis_conversion).reshape(3, 1)
             faces.append(
                 PerspectiveFaceObservation(
                     name=name,
@@ -362,7 +381,7 @@ def capture_cubemap_observation(
                     valid_mask=valid_mask,
                     R=face_camera.R,
                     T=face_camera.T,
-                    K=K.clone(),
+                    K=pytorch3d_projection,
                     camera_center=center.clone(),
                     metadata={
                         "bundle_id": bundle_id,
@@ -370,6 +389,13 @@ def capture_cubemap_observation(
                         "znear": znear,
                         "observation_mode": "cubemap6",
                         "source": "gt_mesh",
+                        "capture_timestamp_unix_ns": capture_timestamp_unix_ns,
+                        "capture_timestamp_utc": capture_timestamp_utc,
+                        "K_pixel": K_pixel.clone(),
+                        "R_opencv_world_to_camera": R_opencv,
+                        "T_opencv_world_to_camera": T_opencv,
+                        "projection_convention": "pytorch3d_row_vector_ndc",
+                        "pixel_intrinsics_convention": "opencv_x_right_y_down",
                     },
                 )
             )
@@ -387,6 +413,8 @@ def capture_cubemap_observation(
             "face_size": face_size,
             "face_fov_degrees": 90.0,
             "render_count": len(faces),
+            "capture_timestamp_unix_ns": capture_timestamp_unix_ns,
+            "capture_timestamp_utc": capture_timestamp_utc,
         },
     )
 
@@ -582,6 +610,7 @@ def _proxy_union_and_signed_distance(
         return proxy_points.reshape(0, 3), empty_mask, None, empty_owner
 
     margins = []
+    sampled_valid_by_face = []
     projections_by_face = []
     view_points_by_face = []
     range_mask = torch.linalg.norm(
@@ -596,12 +625,29 @@ def _proxy_union_and_signed_distance(
         margins.append(
             _face_projection_margin(projections, in_fov, *depth.shape)
         )
+        valid_depth = (
+            _mask_2d(face.valid_mask)
+            & torch.isfinite(depth)
+            & (depth > 0.0)
+        )
+        row, column = _nearest_pixel_indices(projections, *depth.shape)
+        sampled_valid_by_face.append(valid_depth[row, column] & in_fov)
         projections_by_face.append(projections)
         view_points_by_face.append(view_points)
 
     margin_stack = torch.stack(margins, dim=0)
     union_mask = torch.isfinite(margin_stack).any(dim=0)
-    owner = torch.argmax(margin_stack, dim=0)
+    sampled_valid_stack = torch.stack(sampled_valid_by_face, dim=0)
+    has_valid_sample = sampled_valid_stack.any(dim=0, keepdim=True)
+    valid_owner_margins = torch.where(
+        sampled_valid_stack,
+        margin_stack,
+        torch.full_like(margin_stack, -torch.inf),
+    )
+    owner_margins = torch.where(
+        has_valid_sample, valid_owner_margins, margin_stack
+    )
+    owner = torch.argmax(owner_margins, dim=0)
     if not union_mask.any():
         return proxy_points[union_mask], union_mask, None, owner
 
@@ -662,6 +708,7 @@ def process_cubemap_observation(
     if proxy_points.device != torch.device(device):
         proxy_points = proxy_points.to(device)
 
+    _synchronize_if_cuda(device)
     geometry_started = time.perf_counter()
     raw_points = []
     raw_features = []
@@ -671,8 +718,12 @@ def process_cubemap_observation(
     for face in bundle.faces:
         depth = _depth_2d(face.depth_z).to(device)
         mask = _mask_2d(face.valid_mask).to(device)
-        mask = mask & torch.isfinite(depth) & (depth > 0.0) & (depth < sensor_range)
+        mask = mask & torch.isfinite(depth) & (depth > 0.0)
         world = unproject_depth_to_world(depth, face.camera)
+        radial_distance = torch.linalg.norm(
+            world - bundle.center.to(device).reshape(1, 1, 3), dim=-1
+        )
+        mask = mask & (radial_distance < sensor_range)
         colors = face.rgb.to(device)[0]
         points = world[mask]
         features = colors[mask]
@@ -698,6 +749,7 @@ def process_cubemap_observation(
     fov_proxy_points, fov_proxy_mask, signed_distances, proxy_owner = (
         _proxy_union_and_signed_distance(bundle, proxy_points, sensor_range)
     )
+    _synchronize_if_cuda(device)
     geometry_seconds = time.perf_counter() - geometry_started
 
     raw_count = int(concatenated_points.shape[0])
@@ -709,6 +761,10 @@ def process_cubemap_observation(
         "face_count": len(bundle.faces),
         "face_names": list(CUBEMAP_FACE_NAMES),
         "face_size": int(bundle.faces[0].image_height),
+        "capture_timestamp_utc": bundle.metadata.get("capture_timestamp_utc"),
+        "capture_timestamp_unix_ns": bundle.metadata.get(
+            "capture_timestamp_unix_ns"
+        ),
         "real_face_render_count": int(bundle.render_count),
         "capture_seconds": float(bundle.capture_seconds),
         "geometry_seconds": float(geometry_seconds),

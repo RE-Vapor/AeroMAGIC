@@ -97,6 +97,10 @@ class TrajectoryMetricsRecorder:
         self.observation_bundles = []
         self.imagined_bundle_renders = 0
         self.imagined_face_renders = 0
+        self.imagined_history_bundle_renders = 0
+        self.imagined_history_face_renders = 0
+        self.imagined_candidate_bundle_renders = 0
+        self.imagined_candidate_face_renders = 0
         self.coverage = []
         cross_tile_enabled = _config_value(
             config, "experiment_cross_tile_diagnostics_enabled", False
@@ -242,6 +246,10 @@ class TrajectoryMetricsRecorder:
                 "face_count": int(bundle_data.get("face_count", len(face_point_counts))),
                 "face_names": list(bundle_data.get("face_names", [])),
                 "face_size": int(bundle_data.get("face_size", 0)),
+                "capture_timestamp_utc": bundle_data.get("capture_timestamp_utc"),
+                "capture_timestamp_unix_ns": bundle_data.get(
+                    "capture_timestamp_unix_ns"
+                ),
                 "face_point_counts": face_point_counts,
                 "raw_point_count": int(bundle_data.get("raw_point_count", 0)),
                 "unique_point_count": int(bundle_data.get("unique_point_count", 0)),
@@ -255,11 +263,21 @@ class TrajectoryMetricsRecorder:
             }
         )
 
-    def record_imagined_bundle_render(self, *, face_renders: int = 6) -> None:
+    def record_imagined_bundle_render(
+        self, *, face_renders: int = 6, kind: str
+    ) -> None:
         """Count one candidate/history bundle and its physical face renders."""
 
+        if kind not in {"history", "candidate"}:
+            raise ValueError("imagined bundle render kind must be history or candidate.")
         self.imagined_bundle_renders += 1
         self.imagined_face_renders += int(face_renders)
+        if kind == "history":
+            self.imagined_history_bundle_renders += 1
+            self.imagined_history_face_renders += int(face_renders)
+        else:
+            self.imagined_candidate_bundle_renders += 1
+            self.imagined_candidate_face_renders += int(face_renders)
 
     def record_cross_tile_coverage(
         self,
@@ -429,6 +447,18 @@ class TrajectoryMetricsRecorder:
                 ),
                 "imagined_bundle_render_count": self.imagined_bundle_renders,
                 "imagined_face_render_count": self.imagined_face_renders,
+                "imagined_history_bundle_render_count": (
+                    self.imagined_history_bundle_renders
+                ),
+                "imagined_history_face_render_count": (
+                    self.imagined_history_face_renders
+                ),
+                "imagined_candidate_bundle_render_count": (
+                    self.imagined_candidate_bundle_renders
+                ),
+                "imagined_candidate_face_render_count": (
+                    self.imagined_candidate_face_renders
+                ),
                 "bundles": self.observation_bundles,
             }
         if self.cross_tile_enabled:
@@ -505,7 +535,12 @@ def create_trajectory_metrics_recorder(
         "coverage_comparable": _config_value(config, "coverage_comparable", True),
         "compute_collision": _config_value(config, "compute_collision", None),
         "gt_mesh_reference": True,
-        "renderer_zbuf_role": "offline_diagnostic_only",
+        "renderer_zbuf_role": (
+            "online_planning_input_gt_mesh"
+            if _config_value(config, "planning_observation_mode", "single")
+            == "cubemap6"
+            else "offline_diagnostic_only"
+        ),
         "gt_feedback_to_da3": False,
         "gt_mesh_pose_validity_prior": True,
         "gt_mesh_segment_collision_prior": bool(

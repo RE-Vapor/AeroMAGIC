@@ -87,6 +87,50 @@ class ExperimentMetricsTests(unittest.TestCase):
             )
         )
 
+    def test_pioneer_metrics_separate_history_and_candidate_face_renders(self):
+        recorder = create_trajectory_metrics_recorder(
+            {
+                "experiment_metrics_enabled": True,
+                "planning_observation_mode": "cubemap6",
+                "pioneer_face_size": 256,
+                "pioneer_face_fov_degrees": 90.0,
+            },
+            planner="pioneer",
+            scene="eiffel",
+            start_index=0,
+            capture_dir=".",
+            device="cpu",
+        )
+        recorder.record_observation_bundle(
+            {
+                "bundle_id": 0,
+                "face_count": 6,
+                "face_names": ["front", "back", "left", "right", "up", "down"],
+                "face_size": 256,
+                "face_point_counts": [1, 1, 1, 1, 1, 1],
+                "raw_point_count": 6,
+                "unique_point_count": 6,
+                "proxy_union_count": 4,
+            },
+            provider_seconds=0.1,
+            geometry_seconds=0.2,
+        )
+        recorder.record_imagined_bundle_render(face_renders=6, kind="history")
+        recorder.record_imagined_bundle_render(face_renders=6, kind="candidate")
+        result = recorder.finalize(
+            X_cam_history=np.array([[0, 0, 0]]),
+            V_cam_history=np.zeros((1, 2)),
+            final_point_count=6,
+        )
+        self.assertTrue(result["renderer_gt_read"])
+        self.assertEqual(
+            result["run"]["renderer_zbuf_role"],
+            "online_planning_input_gt_mesh",
+        )
+        counters = result["pioneer_observation"]
+        self.assertEqual(counters["imagined_history_face_render_count"], 6)
+        self.assertEqual(counters["imagined_candidate_face_render_count"], 6)
+
     def test_n_tile_metrics_require_manifest_partition_and_recombine(self):
         try:
             import torch

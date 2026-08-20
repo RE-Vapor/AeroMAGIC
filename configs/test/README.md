@@ -28,6 +28,11 @@ Below is a detailed description of all the hyperparameters involved in evaluatin
 | `validation_memory_dir_name` | str | Optional plain directory name that isolates validation captures from production/test memories. Paths and traversal components are rejected. |
 | `validation_n_gt_surface_points` / `validation_n_proxy_points` | int | Optional short-run capacity overrides. Omit them to retain the training configuration. |
 | `debug_profile` | str | Optional compute-only overlay: `quick`, `magician`, or `large-scene`. Equivalent to the CLI `--debug-profile` selector. See `configs/debug/README.md`. |
+| `planning_observation_mode` | str | `single` preserves the legacy perspective observation. `cubemap6` selects one PIONEER bundle containing `front/back/left/right/up/down` square faces at a shared optical centre. |
+| `pioneer_face_size` | int | Square pixel dimension of each PIONEER face; must be at least `16`. |
+| `pioneer_face_fov_degrees` | float | Must be exactly `90.0` for gap-free cubemap coverage. |
+| `pioneer_voxel_size` | float | Positive world-space voxel size used to fuse and deduplicate the six reprojected point clouds before scene updates. |
+| `pioneer_remove_rotation_only_candidates` | bool | Removes orientation-only beam neighbors because a full-sphere PIONEER observation is invariant to rig yaw/elevation. PIONEER currently requires one interpolation step so every captured bundle is processed exactly once. |
 | `scene_mesh_transforms` | object | Optional per-scene exporter/world-coordinate adaptation. Each entry may specify an axis permutation, axis signs, translation, and positive preprocessing scale. Missing scenes use the identity transform. |
 | `scene_texture_atlas_size` | int | Optional positive per-face texture atlas resolution used by both planning entry points and the real-scene CUDA gate. Defaults to the legacy value `32`; large textured meshes can lower it to bound loader memory without changing geometry or planning settings. |
 | `validation_use_occupied_pose` | bool | Defaults to `true`. Set `false` only for a validated custom scene without `occupied_pose.pt`; mesh collision checks remain independent. |
