@@ -131,6 +131,111 @@ class ExperimentMetricsTests(unittest.TestCase):
         self.assertEqual(counters["imagined_history_face_render_count"], 6)
         self.assertEqual(counters["imagined_candidate_face_render_count"], 6)
 
+    def test_pioneer_da3_metrics_prove_per_face_depth_provenance(self):
+        recorder = create_trajectory_metrics_recorder(
+            {
+                "experiment_metrics_enabled": True,
+                "planning_observation_mode": "cubemap6",
+                "use_perfect_depth_map": False,
+                "kind_depth_map": "DA3",
+                "da3_model_id": "depth-anything/DA3NESTED-GIANT-LARGE",
+                "da3_model_revision": "model-revision",
+                "da3_model_config_sha256": "b" * 64,
+                "da3_model_weights_sha256": "c" * 64,
+                "da3_source_revision": "source-revision",
+                "da3_source_tree_sha256": "a" * 64,
+                "da3_window_size": 3,
+                "da3_process_res": 504,
+                "da3_process_res_method": "upper_bound_resize",
+                "da3_output_height": 256,
+                "da3_output_width": 256,
+                "da3_confidence_percentile": None,
+                "da3_cache_enabled": True,
+                "da3_cache_dir": "isolated-da3-cache",
+                "da3_scene_units_per_meter": {"HKUST": 0.2},
+                "compute_collision": False,
+                "experiment_shared_collision_gate": False,
+            },
+            planner="pioneer",
+            scene="HKUST",
+            start_index=0,
+            capture_dir=".",
+            device="cpu",
+        )
+        face_sources = [
+            {
+                "face_name": name,
+                "depth_source": "DA3",
+                "cache_key": f"cache-{name}",
+                "cache_hit": False,
+                "stream_id": f"pioneer/cubemap6/world/{name}",
+                "pose_conditioned": False,
+                "provider_valid_pixels": 4,
+                "provider_error_pixels": 4,
+                "planning_pixels": 4,
+                "provider_seconds": 0.1,
+            }
+            for name in ["front", "back", "left", "right", "up", "down"]
+        ]
+        recorder.record_observation_bundle(
+            {
+                "bundle_id": 0,
+                "face_count": 6,
+                "face_names": ["front", "back", "left", "right", "up", "down"],
+                "depth_source": "DA3",
+                "rgb_source": "gt_mesh",
+                "renderer_zbuf_read": False,
+                "depth_inference_count": 6,
+                "depth_cache_hit_count": 0,
+                "depth_faces": face_sources,
+                "artifact_transaction_version": "pioneer-bundle-commit-v1",
+                "artifact_committed": True,
+            },
+            provider_seconds=0.6,
+            geometry_seconds=0.2,
+        )
+
+        result = recorder.finalize(
+            X_cam_history=np.array([[0, 0, 0]]),
+            V_cam_history=np.zeros((1, 2)),
+            final_point_count=1,
+        )
+
+        self.assertFalse(result["renderer_gt_read"])
+        self.assertEqual(result["run"]["depth_source"], "DA3")
+        self.assertEqual(
+            result["run"]["renderer_zbuf_role"],
+            "rgb_geometry_render_depth_discarded",
+        )
+        self.assertEqual(result["run"]["da3_window_size"], 3)
+        self.assertEqual(result["run"]["da3_source_tree_sha256"], "a" * 64)
+        self.assertEqual(result["run"]["da3_model_config_sha256"], "b" * 64)
+        self.assertEqual(result["run"]["da3_model_weights_sha256"], "c" * 64)
+        self.assertEqual(result["run"]["da3_process_res"], 504)
+        self.assertEqual(
+            result["run"]["da3_process_res_method"], "upper_bound_resize"
+        )
+        self.assertIsNone(result["run"]["da3_confidence_percentile"])
+        self.assertIs(result["run"]["da3_cache_enabled"], True)
+        self.assertEqual(result["run"]["da3_cache_dir"], "isolated-da3-cache")
+        self.assertIs(result["run"]["gt_mesh_segment_collision_prior"], True)
+        self.assertEqual(
+            result["run"]["gt_mesh_segment_collision_prior_reason"],
+            "legacy_first_beam_step_fallback",
+        )
+        bundle = result["pioneer_observation"]["bundles"][0]
+        self.assertEqual(bundle["depth_source"], "DA3")
+        self.assertEqual(bundle["depth_inference_count"], 6)
+        self.assertTrue(bundle["artifact_committed"])
+        self.assertEqual(
+            result["pioneer_observation"]["artifact_committed_bundle_count"], 1
+        )
+        self.assertEqual(len(bundle["depth_faces"]), 6)
+        self.assertEqual(
+            {face["stream_id"] for face in bundle["depth_faces"]},
+            {f"pioneer/cubemap6/world/{name}" for name in bundle["face_names"]},
+        )
+
     def test_position_only_search_audit_matches_candidate_renders(self):
         recorder = create_trajectory_metrics_recorder(
             {

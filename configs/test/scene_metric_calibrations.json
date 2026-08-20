@@ -102,6 +102,33 @@
         "live_cuda_gate": "All five configured starts produced finite, nonempty PyTorch3D CUDA depth/masks with the identity planning transform."
       },
       "scope": "Dataset-native metric tile calibration for 12-NW-6C-7 only. The uploaded OBJ already materializes the y-up recentering and 0.1 preprocessing scale; applying the 12-NW-6C-5 world-coordinate transform again is invalid."
+    },
+    "HKUST": {
+      "scene_units_per_meter": 0.2,
+      "physical_reference": {
+        "feature": "dataset source coordinates treated as meter-scale survey/map coordinates before adaptation",
+        "source": "data/Macarons++/HKUST/adaptation_manifest.json",
+        "evidence": "The adaptation command materializes scale=0.02; the MAGICIAN runtime then applies scene_scale_factor=10.0."
+      },
+      "materialized_preprocess_scale": 0.02,
+      "scene_scale_factor": 10.0,
+      "formula": "1 meter_per_source_unit * 0.02 preprocessed_units_per_source_unit * 10 scene_units_per_preprocessed_unit",
+      "adaptation_manifest": {
+        "path": "data/Macarons++/HKUST/adaptation_manifest.json",
+        "sha256": "64992e97d4632c71473410decfccd9a63e5763867d5c0ed0b0df8b1d5e14065c",
+        "scene_name": "12-NW-6C",
+        "command_scale": 0.02,
+        "target_horizontal_span": 15.0
+      },
+      "mesh": {
+        "path": "data/Macarons++/HKUST/12-NW-6C.obj",
+        "sha256": "cd7b18645cc574c43e55d5f927f8440c810b32f2f8e859700018582535ffa635"
+      },
+      "settings": {
+        "path": "data/Macarons++/HKUST/settings.json",
+        "sha256": "b308575f60d2810aacb952ed42b1e64ed0089067cc227c2eb6b26d23cbf4201a"
+      },
+      "scope": "Runtime scale provenance for this adapted HKUST asset only. It is not a survey-grade independent metric validation and must not be reused for other scenes."
     }
   }
 }

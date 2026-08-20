@@ -153,6 +153,17 @@ class DA3CoordinateTests(unittest.TestCase):
         np.testing.assert_allclose(K[1, 1], expected_focal, rtol=1e-6)
         np.testing.assert_array_equal(K[:2, 2], [228.0, 128.0])
 
+    def test_explicit_cubemap_pixel_intrinsics_take_precedence(self):
+        camera = _Camera("unused", 1)
+        camera.K_pixel = np.array(
+            [[[127.5, 0.0, 127.5], [0.0, 127.5, 127.5], [0.0, 0.0, 1.0]]],
+            dtype=np.float32,
+        )
+
+        K = camera_intrinsics(camera, 256, 256)
+
+        np.testing.assert_array_equal(K, camera.K_pixel[0])
+
 
 class DA3ProviderTests(unittest.TestCase):
     def setUp(self):
@@ -238,6 +249,54 @@ class DA3ProviderTests(unittest.TestCase):
             self.assertEqual(metadata["adapter_version"], DA3_ADAPTER_VERSION)
             for name in ("source", "model", "preprocess", "camera", "scale"):
                 self.assertIn(name, metadata)
+
+    def test_explicit_rgb_history_bypasses_frame_files_and_isolates_stream_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            frames = tuple(_frame(index, include_gt=True) for index in range(3))
+            model = _FakeModel()
+            loader = _ModelLoader(model)
+
+            def reject_frame_file(path, device):
+                raise AssertionError(f"unexpected filesystem frame read: {path}")
+
+            provider = DA3DepthProvider(
+                config={
+                    "da3_cache_dir": str(Path(directory, "cache")),
+                    "da3_window_size": 3,
+                    "da3_output_height": 2,
+                    "da3_output_width": 3,
+                    "da3_cache_enabled": False,
+                    "scene_name": "synthetic",
+                    "scene_units_per_meter": 10.0,
+                    "znear": 0.5,
+                    "zfar": 50.0,
+                },
+                device="cuda:0",
+                model_loader=loader,
+                frame_loader=reject_frame_file,
+                tensor_factory=_numpy_tensor,
+            )
+            camera = _Camera(directory, 3)
+            observation = DepthObservation(
+                camera=camera,
+                device="cuda:0",
+                frame_ids=(0, 1, 2),
+                frame_history=tuple(
+                    {name: frame[name] for name in ("rgb", "R", "T")}
+                    for frame in frames
+                ),
+                cache_namespace="cubemap6/front",
+            )
+
+            result = provider.get_frame(observation)
+
+            self.assertEqual(result.frame_id, 2)
+            self.assertEqual(result.cache_metadata["stream"]["id"], "cubemap6/front")
+            self.assertEqual(len(model.calls), 1)
+            self.assertEqual(len(model.calls[0]["image"]), 3)
+            metadata_text = json.dumps(result.cache_metadata, sort_keys=True)
+            self.assertNotIn("zbuf", metadata_text)
+            self.assertNotIn("mask", metadata_text)
 
     def test_two_or_collinear_frames_disable_degenerate_pose_alignment(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -433,6 +492,15 @@ class DA3ProviderTests(unittest.TestCase):
 
             baseline = key()
             self.assertNotEqual(baseline, key(da3_model_revision="other-revision"))
+            self.assertNotEqual(
+                baseline, key(da3_model_config_sha256="b" * 64)
+            )
+            self.assertNotEqual(
+                baseline, key(da3_model_weights_sha256="c" * 64)
+            )
+            self.assertNotEqual(
+                baseline, key(da3_source_tree_sha256="a" * 64)
+            )
             self.assertNotEqual(baseline, key(da3_process_res=392))
             self.assertNotEqual(baseline, key(scene_units_per_meter=5.0))
             frames[0]["T"] = np.array([[1.0, 2.0, 3.0]], dtype=np.float32)

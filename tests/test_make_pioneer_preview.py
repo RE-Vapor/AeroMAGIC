@@ -21,7 +21,9 @@ class MakePioneerPreviewTests(unittest.TestCase):
         root = Path(temporary)
         frames = root / "memory" / "training" / "0" / "frames"
         images = frames.parent / "imgs"
+        commits = frames.parent / ".pioneer_bundle_commits"
         frames.mkdir(parents=True)
+        commits.mkdir(parents=True)
         bundles = []
         for bundle_id in range(bundle_count):
             image_dir = images / f"{bundle_id:06d}"
@@ -32,12 +34,42 @@ class MakePioneerPreviewTests(unittest.TestCase):
                 rgb[:, :, 1] = 20 * face_index
                 rgb[:, :, 2] = 100
                 Image.fromarray(rgb).save(image_dir / f"{face}.png")
+            frame_dir = frames / f"{bundle_id:06d}"
+            frame_dir.mkdir()
+            for filename in ["bundle.pt", *(f"{face}.pt" for face in FACE_NAMES)]:
+                (frame_dir / filename).write_bytes(
+                    f"{bundle_id}:{filename}".encode("utf-8")
+                )
+            frame_hashes = {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in frame_dir.iterdir()
+            }
+            image_hashes = {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in image_dir.iterdir()
+            }
+            (commits / f"{bundle_id:06d}.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "transaction_version": "pioneer-bundle-commit-v1",
+                        "bundle_id": bundle_id,
+                        "face_names": list(FACE_NAMES),
+                        "png_committed": True,
+                        "frame_sha256": frame_hashes,
+                        "image_sha256": image_hashes,
+                    }
+                ),
+                encoding="utf-8",
+            )
             bundles.append(
                 {
                     "bundle_id": bundle_id,
                     "face_count": 6,
                     "face_names": list(FACE_NAMES),
                     "face_point_counts": [bundle_id + face for face in range(6)],
+                    "artifact_transaction_version": "pioneer-bundle-commit-v1",
+                    "artifact_committed": True,
                 }
             )
 
@@ -51,6 +83,7 @@ class MakePioneerPreviewTests(unittest.TestCase):
                 "run_id": "test_pioneer_preview",
                 "planning_observation_mode": "cubemap6",
                 "pioneer_face_size": 16,
+                "depth_source": "DA3",
             },
             "coverage": [
                 {"normalized": 0.1 + 0.2 * bundle_id / max(1, bundle_count - 1)}
@@ -118,10 +151,12 @@ class MakePioneerPreviewTests(unittest.TestCase):
                 self.assertGreater(image.width, 500)
                 self.assertGreater(image.height, 300)
             self.assertEqual(sidecar["summary"]["bundle_count"], 3)
+            self.assertEqual(sidecar["summary"]["depth_source"], "DA3")
             self.assertEqual(sidecar["summary"]["displayed_bundle_ids"], [0, 1, 2])
             self.assertEqual(sidecar["summary"]["face_count"], 18)
             self.assertEqual(sidecar["summary"]["reconstructed_point_count"], 4)
             self.assertEqual(sidecar["sources"]["capture_image_count"], 18)
+            self.assertEqual(sidecar["sources"]["bundle_commit_marker_count"], 3)
             self.assertEqual(
                 sidecar["sources"]["lmdb"]["data_sha256"],
                 hashlib.sha256((lmdb_path / "data.mdb").read_bytes()).hexdigest(),
@@ -163,6 +198,33 @@ class MakePioneerPreviewTests(unittest.TestCase):
                     metrics_path=metrics_path,
                     lmdb_path=lmdb_path,
                     output_path=Path(temporary) / "invalid.png",
+                    max_points=100,
+                    dpi=20,
+                )
+
+    def test_da3_preview_rejects_missing_or_tampered_bundle_commit_marker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            metrics_path, lmdb_path, images = self._fixture(temporary)
+            marker = images.parent / ".pioneer_bundle_commits" / "000001.json"
+            marker.unlink()
+            with self.assertRaisesRegex(FileNotFoundError, "commit marker"):
+                generate_preview(
+                    metrics_path=metrics_path,
+                    lmdb_path=lmdb_path,
+                    output_path=Path(temporary) / "missing-marker.png",
+                    max_points=100,
+                    dpi=20,
+                )
+
+            metrics_path, lmdb_path, images = self._fixture(
+                Path(temporary) / "tampered"
+            )
+            (images / "000002" / "front.png").write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "image hash mismatch"):
+                generate_preview(
+                    metrics_path=metrics_path,
+                    lmdb_path=lmdb_path,
+                    output_path=Path(temporary) / "tampered.png",
                     max_points=100,
                     dpi=20,
                 )

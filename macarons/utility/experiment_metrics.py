@@ -242,10 +242,38 @@ class TrajectoryMetricsRecorder:
         face_point_counts = [
             int(value) for value in bundle_data.get("face_point_counts", [])
         ]
+        face_count = int(bundle_data.get("face_count", len(face_point_counts)))
+        depth_source = str(bundle_data.get("depth_source", "GT")).upper()
+        depth_inference_count = int(bundle_data.get("depth_inference_count", 0))
+        depth_faces = [dict(face) for face in bundle_data.get("depth_faces", [])]
+        artifact_transaction_version = bundle_data.get(
+            "artifact_transaction_version"
+        )
+        artifact_committed = bundle_data.get("artifact_committed")
+        if depth_source != "GT":
+            if bundle_data.get("renderer_zbuf_read") is not False:
+                raise ValueError("Non-GT cubemap depth must not read renderer z-buffer.")
+            if depth_inference_count != face_count or len(depth_faces) != face_count:
+                raise ValueError(
+                    "Non-GT cubemap depth requires one provenance row per face."
+                )
+            if any(
+                str(face.get("depth_source", "")).upper() != depth_source
+                for face in depth_faces
+            ):
+                raise ValueError("Cubemap face depth sources must match the bundle source.")
+            if (
+                artifact_transaction_version != "pioneer-bundle-commit-v1"
+                or artifact_committed is not True
+            ):
+                raise ValueError(
+                    "Non-GT cubemap depth requires a committed bundle artifact "
+                    "transaction."
+                )
         self.observation_bundles.append(
             {
                 "bundle_id": int(bundle_data["bundle_id"]),
-                "face_count": int(bundle_data.get("face_count", len(face_point_counts))),
+                "face_count": face_count,
                 "face_names": list(bundle_data.get("face_names", [])),
                 "face_size": int(bundle_data.get("face_size", 0)),
                 "rig_frame": bundle_data.get("rig_frame"),
@@ -262,6 +290,18 @@ class TrajectoryMetricsRecorder:
                     - bundle_data.get("unique_point_count", 0)
                 ),
                 "proxy_union_count": int(bundle_data.get("proxy_union_count", 0)),
+                "depth_source": depth_source,
+                "rgb_source": bundle_data.get("rgb_source", "gt_mesh"),
+                "renderer_zbuf_read": bool(
+                    bundle_data.get("renderer_zbuf_read", depth_source == "GT")
+                ),
+                "depth_inference_count": depth_inference_count,
+                "depth_cache_hit_count": int(
+                    bundle_data.get("depth_cache_hit_count", 0)
+                ),
+                "depth_faces": depth_faces,
+                "artifact_transaction_version": artifact_transaction_version,
+                "artifact_committed": artifact_committed is True,
                 "provider_seconds": float(provider_seconds),
                 "geometry_seconds": float(geometry_seconds),
             }
@@ -458,7 +498,8 @@ class TrajectoryMetricsRecorder:
             "schema_version": self.schema_version,
             "online_only": True,
             "renderer_gt_read": (
-                self.run_metadata.get("planning_observation_mode") == "cubemap6"
+                self.run_metadata.get("renderer_zbuf_role")
+                == "online_planning_input_gt_mesh"
             ),
             "planner": self.planner,
             "scene": self.scene,
@@ -517,6 +558,35 @@ class TrajectoryMetricsRecorder:
             metrics["pioneer_observation"] = {
                 "schema_version": 1,
                 "bundle_count": len(self.observation_bundles),
+                "depth_source": (
+                    self.observation_bundles[0]["depth_source"]
+                    if len(
+                        {
+                            bundle["depth_source"]
+                            for bundle in self.observation_bundles
+                        }
+                    )
+                    == 1
+                    else "MIXED"
+                ),
+                "depth_inference_count": int(
+                    sum(
+                        bundle["depth_inference_count"]
+                        for bundle in self.observation_bundles
+                    )
+                ),
+                "depth_cache_hit_count": int(
+                    sum(
+                        bundle["depth_cache_hit_count"]
+                        for bundle in self.observation_bundles
+                    )
+                ),
+                "artifact_committed_bundle_count": int(
+                    sum(
+                        bundle["artifact_committed"]
+                        for bundle in self.observation_bundles
+                    )
+                ),
                 "real_face_render_count": int(
                     sum(bundle["face_count"] for bundle in self.observation_bundles)
                 ),
@@ -649,31 +719,62 @@ def create_trajectory_metrics_recorder(
 ) -> Optional[TrajectoryMetricsRecorder]:
     if not experiment_metrics_enabled(config):
         return None
+    planning_observation_mode = _config_value(
+        config, "planning_observation_mode", "single"
+    )
+    use_perfect_depth_map = _config_value(config, "use_perfect_depth_map", True)
+    depth_source = (
+        "GT"
+        if use_perfect_depth_map
+        else str(_config_value(config, "kind_depth_map", "")).strip().upper()
+    )
+    renderer_zbuf_role = "offline_diagnostic_only"
+    if planning_observation_mode == "cubemap6":
+        renderer_zbuf_role = (
+            "online_planning_input_gt_mesh"
+            if depth_source == "GT"
+            else "rgb_geometry_render_depth_discarded"
+        )
+    shared_collision_gate = _config_value(
+        config, "experiment_shared_collision_gate", False
+    )
+    if type(shared_collision_gate) is not bool:
+        raise ValueError("experiment_shared_collision_gate must be a boolean.")
+    compute_collision = _config_value(config, "compute_collision", False)
+    if type(compute_collision) is not bool:
+        raise ValueError("compute_collision must be a boolean.")
+    segment_collision_prior = (
+        bool(compute_collision) if shared_collision_gate else True
+    )
+    segment_collision_reason = (
+        "shared_collision_gate"
+        if shared_collision_gate
+        else "legacy_first_beam_step_fallback"
+    )
     run_metadata = {
         "run_id": _config_value(config, "experiment_run_id", None),
+        "macarons_params_sha256": _config_value(
+            config, "macarons_params_sha256", None
+        ),
         "seed": _config_value(config, "random_seed", None),
         "torch_seed": _config_value(config, "torch_seed", None),
         "budget_observations": _config_value(config, "experiment_budget_observations", None),
         "debug_profile": _config_value(config, "debug_profile", None),
         "debug_only": _config_value(config, "debug_only", False),
         "coverage_comparable": _config_value(config, "coverage_comparable", True),
-        "compute_collision": _config_value(config, "compute_collision", None),
+        "compute_collision": compute_collision,
+        "planning_shared_collision_gate": shared_collision_gate,
         "gt_mesh_reference": True,
-        "renderer_zbuf_role": (
-            "online_planning_input_gt_mesh"
-            if _config_value(config, "planning_observation_mode", "single")
-            == "cubemap6"
-            else "offline_diagnostic_only"
-        ),
+        "depth_source": depth_source,
+        "use_perfect_depth_map": use_perfect_depth_map,
+        "kind_depth_map": _config_value(config, "kind_depth_map", None),
+        "renderer_zbuf_role": renderer_zbuf_role,
         "gt_feedback_to_da3": False,
         "gt_mesh_pose_validity_prior": True,
-        "gt_mesh_segment_collision_prior": bool(
-            _config_value(config, "compute_collision", False)
-        ),
+        "gt_mesh_segment_collision_prior": segment_collision_prior,
+        "gt_mesh_segment_collision_prior_reason": segment_collision_reason,
         "rade_gs_prior": planner.lower() in {"magician", "pioneer"},
-        "planning_observation_mode": _config_value(
-            config, "planning_observation_mode", "single"
-        ),
+        "planning_observation_mode": planning_observation_mode,
         "pioneer_face_count": (
             6
             if _config_value(config, "planning_observation_mode", "single")
@@ -709,6 +810,36 @@ def create_trajectory_metrics_recorder(
         ),
         "validation_require_complete_occupied_pose": _config_value(
             config, "validation_require_complete_occupied_pose", False
+        ),
+        "da3_model_id": _config_value(config, "da3_model_id", None),
+        "da3_model_revision": _config_value(config, "da3_model_revision", None),
+        "da3_model_config_sha256": _config_value(
+            config, "da3_model_config_sha256", None
+        ),
+        "da3_model_weights_sha256": _config_value(
+            config, "da3_model_weights_sha256", None
+        ),
+        "da3_source_revision": _config_value(config, "da3_source_revision", None),
+        "da3_source_tree_sha256": _config_value(
+            config, "da3_source_tree_sha256", None
+        ),
+        "da3_window_size": _config_value(config, "da3_window_size", None),
+        "da3_process_res": _config_value(config, "da3_process_res", None),
+        "da3_process_res_method": _config_value(
+            config, "da3_process_res_method", None
+        ),
+        "da3_output_height": _config_value(config, "da3_output_height", None),
+        "da3_output_width": _config_value(config, "da3_output_width", None),
+        "da3_confidence_percentile": _config_value(
+            config, "da3_confidence_percentile", None
+        ),
+        "da3_cache_enabled": _config_value(config, "da3_cache_enabled", None),
+        "da3_cache_dir": _config_value(config, "da3_cache_dir", None),
+        "scene_texture_tree_sha256": _config_value(
+            config, "scene_texture_tree_sha256", None
+        ),
+        "da3_scene_units_per_meter": _config_value(
+            config, "da3_scene_units_per_meter", None
         ),
     }
     return TrajectoryMetricsRecorder(

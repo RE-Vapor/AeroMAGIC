@@ -25,6 +25,7 @@ LIVE_END = "<!-- PIONEER_LIVE_SECTION_END -->"
 SUPPORTED_ISSUES = ("PAN-10", "PAN-11")
 PASS_STATUSES = {"PASS", "SUCCESS", "COMPLETED"}
 FAIL_STATUSES = {"FAIL", "FAILED", "RUNTIME_FAIL", "SCIENTIFIC_FAIL"}
+BUNDLE_TRANSACTION_VERSION = "pioneer-bundle-commit-v1"
 
 
 def _read_json(path: Path) -> Optional[Mapping[str, Any]]:
@@ -143,6 +144,71 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _bundle_transaction_verified(
+    capture_dir: Path,
+    bundle: Mapping[str, Any],
+    expected_face_names: Sequence[str],
+) -> bool:
+    bundle_id = _as_int(bundle.get("bundle_id"))
+    if (
+        bundle_id is None
+        or bundle.get("artifact_transaction_version")
+        != BUNDLE_TRANSACTION_VERSION
+        or bundle.get("artifact_committed") is not True
+    ):
+        return False
+    marker_path = (
+        capture_dir.parent / ".pioneer_bundle_commits" / f"{bundle_id:06d}.json"
+    )
+    marker = _read_json(marker_path)
+    if not isinstance(marker, Mapping):
+        return False
+    frame_hashes = marker.get("frame_sha256")
+    image_hashes = marker.get("image_sha256")
+    expected_frames = {"bundle.pt", *(f"{name}.pt" for name in expected_face_names)}
+    expected_images = {f"{name}.png" for name in expected_face_names}
+    if (
+        marker.get("transaction_version") != BUNDLE_TRANSACTION_VERSION
+        or _as_int(marker.get("bundle_id")) != bundle_id
+        or list(marker.get("face_names") or []) != list(expected_face_names)
+        or marker.get("png_committed") is not True
+        or not isinstance(frame_hashes, Mapping)
+        or set(frame_hashes) != expected_frames
+        or not isinstance(image_hashes, Mapping)
+        or set(image_hashes) != expected_images
+    ):
+        return False
+    for filename, expected_sha in frame_hashes.items():
+        path = capture_dir / f"{bundle_id:06d}" / filename
+        if (
+            not isinstance(expected_sha, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_sha)
+            or not path.is_file()
+            or _file_sha256(path) != expected_sha
+        ):
+            return False
+    for filename, expected_sha in image_hashes.items():
+        path = capture_dir.parent / "imgs" / f"{bundle_id:06d}" / filename
+        if (
+            not isinstance(expected_sha, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_sha)
+            or not path.is_file()
+            or _file_sha256(path) != expected_sha
+        ):
+            return False
+    return True
+
+
+def _path_is_within(path: Any, root: Any) -> bool:
+    if not isinstance(path, str) or not path or not isinstance(root, str) or not root:
+        return False
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def _resolve_config(
     *,
     run_dir: Path,
@@ -192,7 +258,18 @@ def _resolve_config(
         ("debug_profile",),
     )
     if isinstance(profile, str) and re.fullmatch(r"[A-Za-z0-9._-]+", profile):
-        profile_document = _read_json(repo_root / "configs" / "debug" / f"{profile}.json")
+        profile_ref = manifest.get("debug_profile_snapshot")
+        profile_snapshot = (
+            run_dir / profile_ref
+            if isinstance(profile_ref, str)
+            and re.fullmatch(r"[A-Za-z0-9._-]+", profile_ref)
+            else run_dir / "debug_profile.json"
+        )
+        profile_document = _read_json(profile_snapshot)
+        if profile_document is None:
+            profile_document = _read_json(
+                repo_root / "configs" / "debug" / f"{profile}.json"
+            )
         if profile_document is not None:
             overrides = profile_document.get("overrides")
             if isinstance(overrides, Mapping):
@@ -270,7 +347,11 @@ def _artifact_set(
     artifact_roots = list(explicit_artifact_roots)
     capture_dir = metrics.get("capture_dir")
     if isinstance(capture_dir, str) and capture_dir.strip():
-        artifact_roots.append(Path(capture_dir.strip()))
+        capture_path = Path(capture_dir.strip())
+        artifact_roots.append(capture_path)
+        commit_root = capture_path.parent / ".pioneer_bundle_commits"
+        if commit_root.is_dir():
+            artifact_roots.append(commit_root)
     for path in _artifact_paths(
         run_dir,
         online_metrics,
@@ -383,8 +464,59 @@ def build_record(
     manifest = _read_evidence_file(manifest_path) if manifest_path else {}
     status = _read_evidence_file(status_path) if status_path else {}
     metrics = _read_json(online_metrics_path) or {}
-    config, _ = _resolve_config(run_dir=run_dir, manifest=manifest, metrics=metrics)
+    config, config_path = _resolve_config(
+        run_dir=run_dir, manifest=manifest, metrics=metrics
+    )
     sources = [metrics, manifest, config]
+
+    manifest_config_sha = manifest.get("config_sha256")
+    config_snapshot_verified = bool(
+        config_path is not None
+        and isinstance(manifest_config_sha, str)
+        and re.fullmatch(r"[0-9a-f]{64}", manifest_config_sha)
+        and _file_sha256(config_path) == manifest_config_sha
+    )
+    profile_ref = manifest.get("debug_profile_snapshot")
+    profile_snapshot = (
+        run_dir / profile_ref
+        if isinstance(profile_ref, str)
+        and re.fullmatch(r"[A-Za-z0-9._-]+", profile_ref)
+        else run_dir / "debug_profile.json"
+    )
+    manifest_profile_sha = manifest.get("debug_profile_sha256")
+    profile_snapshot_verified = bool(
+        profile_snapshot.is_file()
+        and isinstance(manifest_profile_sha, str)
+        and re.fullmatch(r"[0-9a-f]{64}", manifest_profile_sha)
+        and _file_sha256(profile_snapshot) == manifest_profile_sha
+    )
+    macarons_params_ref = manifest.get("macarons_params_snapshot")
+    macarons_params_snapshot = (
+        run_dir / macarons_params_ref
+        if isinstance(macarons_params_ref, str)
+        and re.fullmatch(r"[A-Za-z0-9._-]+", macarons_params_ref)
+        else run_dir / "macarons_params.json"
+    )
+    manifest_macarons_params_sha = manifest.get("macarons_params_sha256")
+    macarons_params_snapshot_verified = bool(
+        macarons_params_snapshot.is_file()
+        and isinstance(manifest_macarons_params_sha, str)
+        and re.fullmatch(r"[0-9a-f]{64}", manifest_macarons_params_sha)
+        and _file_sha256(macarons_params_snapshot) == manifest_macarons_params_sha
+    )
+    manifest_run_commit = _full_commit(
+        str(manifest.get("git_commit") or "")
+    )
+    scientific_full = _full_commit(scientific_run_commit)
+    run_commit_verified = bool(
+        scientific_full is not None and manifest_run_commit == scientific_full
+    )
+    runtime_snapshot_integrity_verified = bool(
+        manifest.get("runtime_snapshot_integrity_contract")
+        == "pre-and-post-v1"
+        and status.get("snapshot_integrity_preflight") == "PASS"
+        and status.get("snapshot_integrity_postflight") == "PASS"
+    )
 
     planner_value = _pick(sources, ("planner",), ("run", "planner"))
     planner = str(planner_value) if planner_value is not None else None
@@ -502,8 +634,17 @@ def build_record(
     collision = _as_bool(
         _pick(sources, ("run", "compute_collision"), ("compute_collision",))
     )
-    depth_source_value = _pick(sources, ("kind_depth_map",), ("depth_source",))
-    depth_source = str(depth_source_value) if depth_source_value is not None else None
+    depth_source_value = _pick(
+        sources,
+        ("run", "depth_source"),
+        ("depth_source",),
+        ("kind_depth_map",),
+    )
+    depth_source = (
+        str(depth_source_value).strip().upper()
+        if depth_source_value is not None
+        else None
+    )
     start_index = _as_int(_pick(sources, ("start_index",), ("start",)))
 
     planner_state_mode_value = _pick(
@@ -681,6 +822,326 @@ def build_record(
         completion_verified = False
         status_reason = "PAN-11 planner-state/search telemetry contract is incomplete."
 
+    metrics_run = metrics.get("run") if isinstance(metrics.get("run"), Mapping) else {}
+    da3_model_id = metrics_run.get("da3_model_id")
+    da3_model_revision = metrics_run.get("da3_model_revision")
+    da3_model_config_sha = metrics_run.get("da3_model_config_sha256")
+    da3_model_weights_sha = metrics_run.get("da3_model_weights_sha256")
+    da3_source_revision = metrics_run.get("da3_source_revision")
+    da3_source_tree_sha = metrics_run.get("da3_source_tree_sha256")
+    da3_window_size = _as_int(metrics_run.get("da3_window_size"))
+    da3_process_res = _as_int(metrics_run.get("da3_process_res"))
+    da3_process_res_method = metrics_run.get("da3_process_res_method")
+    da3_confidence_percentile = metrics_run.get("da3_confidence_percentile")
+    da3_confidence_declared = "da3_confidence_percentile" in metrics_run
+    da3_cache_enabled = metrics_run.get("da3_cache_enabled")
+    da3_cache_dir = metrics_run.get("da3_cache_dir")
+    da3_scale_map = metrics_run.get("da3_scene_units_per_meter")
+    da3_scale = (
+        da3_scale_map.get(scene)
+        if isinstance(da3_scale_map, Mapping) and scene is not None
+        else None
+    )
+    da3_output_height = _as_int(metrics_run.get("da3_output_height"))
+    da3_output_width = _as_int(metrics_run.get("da3_output_width"))
+    calibration_snapshot = run_dir / "scene_metric_calibrations.json"
+    manifest_calibration_sha = manifest.get("da3_calibration_sha256")
+    calibration_snapshot_verified = bool(
+        calibration_snapshot.is_file()
+        and isinstance(manifest_calibration_sha, str)
+        and re.fullmatch(r"[0-9a-f]{64}", manifest_calibration_sha)
+        and _file_sha256(calibration_snapshot) == manifest_calibration_sha
+    )
+    calibration_document = _read_json(calibration_snapshot) or {}
+    calibration_rows = calibration_document.get("calibrations")
+    scene_calibration = (
+        calibration_rows.get(scene)
+        if isinstance(calibration_rows, Mapping) and scene is not None
+        else None
+    )
+    calibration_semantics_verified = bool(
+        isinstance(scene_calibration, Mapping)
+        and _as_float(scene_calibration.get("scene_units_per_meter")) == da3_scale
+    )
+    import_tree_sha = manifest.get("da3_import_package_tree_sha256")
+    import_source_root = manifest.get("da3_import_source_root")
+    import_origin = manifest.get("da3_import_origin")
+    import_source_verified = bool(
+        isinstance(import_tree_sha, str)
+        and re.fullmatch(r"[0-9a-f]{64}", import_tree_sha)
+        and _path_is_within(import_origin, import_source_root)
+        and isinstance(da3_source_revision, str)
+        and da3_source_revision in str(import_source_root)
+    )
+    try:
+        asset_provenance = json.loads(
+            str(manifest.get("scene_asset_provenance_json") or "")
+        )
+    except json.JSONDecodeError:
+        asset_provenance = None
+    asset_hashes_verified = bool(
+        _as_bool(manifest.get("scene_asset_hashes_verified")) is True
+        and isinstance(asset_provenance, Mapping)
+        and set(asset_provenance)
+        >= {
+            "adaptation_manifest", "mesh", "settings", "occupied_pose",
+            "planner_weight", "da3_model_config", "da3_model_weights",
+        }
+        and all(
+            isinstance(item, Mapping)
+            and isinstance(item.get("path"), str)
+            and bool(item.get("path"))
+            and isinstance(item.get("sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
+            and Path(item["path"]).is_file()
+            and _file_sha256(Path(item["path"])) == item["sha256"]
+            for item in asset_provenance.values()
+        )
+    )
+    if asset_hashes_verified and isinstance(scene_calibration, Mapping):
+        repo_root = Path(__file__).resolve().parents[1]
+        for calibration_key in ("adaptation_manifest", "mesh", "settings"):
+            calibration_item = scene_calibration.get(calibration_key)
+            asset_item = asset_provenance.get(calibration_key)
+            if not isinstance(calibration_item, Mapping) or not isinstance(
+                asset_item, Mapping
+            ):
+                asset_hashes_verified = False
+                break
+            calibration_path = Path(str(calibration_item.get("path") or ""))
+            if not calibration_path.is_absolute():
+                calibration_path = repo_root / calibration_path
+            if (
+                calibration_path.resolve() != Path(asset_item["path"]).resolve()
+                or calibration_item.get("sha256") != asset_item.get("sha256")
+            ):
+                asset_hashes_verified = False
+                break
+    else:
+        asset_hashes_verified = False
+    manifest_texture_tree_sha = manifest.get("scene_texture_tree_sha256")
+    texture_tree_verified = False
+    if asset_hashes_verified:
+        texture_items = [
+            item
+            for name, item in asset_provenance.items()
+            if name.startswith("material_") or name.startswith("texture_")
+        ]
+        material_count = sum(name.startswith("material_") for name in asset_provenance)
+        texture_count = sum(name.startswith("texture_") for name in asset_provenance)
+        try:
+            mesh_root = Path(asset_provenance["mesh"]["path"]).resolve().parent
+            tree = hashlib.sha256()
+            for item in sorted(texture_items, key=lambda value: value["path"]):
+                path = Path(item["path"]).resolve()
+                tree.update(path.relative_to(mesh_root).as_posix().encode("utf-8"))
+                tree.update(b"\0")
+                tree.update(item["sha256"].encode("ascii"))
+                tree.update(b"\n")
+            texture_tree_verified = bool(
+                material_count > 0
+                and texture_count > 0
+                and isinstance(manifest_texture_tree_sha, str)
+                and re.fullmatch(r"[0-9a-f]{64}", manifest_texture_tree_sha)
+                and tree.hexdigest() == manifest_texture_tree_sha
+                and config.get("scene_texture_tree_sha256")
+                == manifest_texture_tree_sha
+                and metrics_run.get("scene_texture_tree_sha256")
+                == manifest_texture_tree_sha
+            )
+        except (KeyError, OSError, ValueError, TypeError):
+            texture_tree_verified = False
+    model_cache_hashes_verified = bool(
+        asset_hashes_verified
+        and isinstance(da3_model_config_sha, str)
+        and isinstance(da3_model_weights_sha, str)
+        and asset_provenance["da3_model_config"].get("sha256")
+        == da3_model_config_sha
+        and asset_provenance["da3_model_weights"].get("sha256")
+        == da3_model_weights_sha
+    )
+    da3_bundle_cache_hits = 0
+    da3_face_rows_verified = depth_source != "DA3"
+    capture_path_value = metrics.get("capture_dir")
+    capture_path = (
+        Path(capture_path_value).expanduser().resolve()
+        if isinstance(capture_path_value, str) and capture_path_value.strip()
+        else None
+    )
+    if depth_source == "DA3" and isinstance(bundles, list):
+        da3_face_rows_verified = True
+        for bundle in bundles:
+            depth_faces = bundle.get("depth_faces") if isinstance(bundle, Mapping) else None
+            if (
+                not isinstance(depth_faces, list)
+                or len(depth_faces) != 6
+                or str(bundle.get("depth_source", "")).upper() != "DA3"
+                or bundle.get("rgb_source") != "gt_mesh"
+                or bundle.get("renderer_zbuf_read") is not False
+                or _as_int(bundle.get("depth_inference_count")) != 6
+                or capture_path is None
+                or not _bundle_transaction_verified(
+                    capture_path, bundle, expected_face_names
+                )
+            ):
+                da3_face_rows_verified = False
+                break
+            bundle_cache_hits = 0
+            for expected_face_name, face in zip(expected_face_names, depth_faces):
+                model = face.get("model") if isinstance(face, Mapping) else None
+                preprocess = (
+                    face.get("preprocess") if isinstance(face, Mapping) else None
+                )
+                scale_metadata = (
+                    face.get("scale") if isinstance(face, Mapping) else None
+                )
+                cache_hit = face.get("cache_hit") if isinstance(face, Mapping) else None
+                stream_id = face.get("stream_id") if isinstance(face, Mapping) else None
+                provider_seconds = (
+                    face.get("provider_seconds") if isinstance(face, Mapping) else None
+                )
+                count_fields = (
+                    face.get("provider_valid_pixels"),
+                    face.get("provider_error_pixels"),
+                    face.get("planning_pixels"),
+                ) if isinstance(face, Mapping) else ()
+                if (
+                    not isinstance(face, Mapping)
+                    or face.get("face_name") != expected_face_name
+                    or str(face.get("depth_source", "")).upper() != "DA3"
+                    or not isinstance(face.get("cache_key"), str)
+                    or not face["cache_key"]
+                    or type(cache_hit) is not bool
+                    or stream_id
+                    != f"pioneer/cubemap6/{cubemap_rig_frame}/{expected_face_name}"
+                    or type(face.get("pose_conditioned")) is not bool
+                    or any(type(value) is not int or value < 0 for value in count_fields)
+                    or isinstance(provider_seconds, bool)
+                    or not isinstance(provider_seconds, (int, float))
+                    or provider_seconds < 0
+                    or not isinstance(face.get("adapter_version"), str)
+                    or not face["adapter_version"]
+                    or face.get("source_revision") != da3_source_revision
+                    or face.get("source_tree_sha256") != da3_source_tree_sha
+                    or not isinstance(model, Mapping)
+                    or model.get("id") != da3_model_id
+                    or model.get("revision") != da3_model_revision
+                    or model.get("config_sha256") != da3_model_config_sha
+                    or model.get("weights_sha256") != da3_model_weights_sha
+                    or not isinstance(preprocess, Mapping)
+                    or _as_int(preprocess.get("window_size")) != da3_window_size
+                    or _as_int(preprocess.get("process_res")) != da3_process_res
+                    or preprocess.get("process_res_method")
+                    != da3_process_res_method
+                    or preprocess.get("output_size")
+                    != [da3_output_height, da3_output_width]
+                    or preprocess.get("confidence_percentile")
+                    != da3_confidence_percentile
+                    or not isinstance(scale_metadata, Mapping)
+                    or scale_metadata.get("scene") != scene
+                    or _as_float(scale_metadata.get("scene_units_per_meter"))
+                    != da3_scale
+                    or _as_float(scale_metadata.get("znear")) is None
+                    or _as_float(scale_metadata.get("zfar")) is None
+                    or _as_float(scale_metadata.get("zfar"))
+                    <= _as_float(scale_metadata.get("znear"))
+                ):
+                    da3_face_rows_verified = False
+                    break
+                bundle_cache_hits += int(cache_hit)
+            if not da3_face_rows_verified:
+                break
+            if _as_int(bundle.get("depth_cache_hit_count")) != bundle_cache_hits:
+                da3_face_rows_verified = False
+                break
+            da3_bundle_cache_hits += bundle_cache_hits
+    da3_cubemap_provenance_verified = bool(
+        depth_source != "DA3"
+        or (
+            metrics.get("renderer_gt_read") is False
+            and metrics_run.get("depth_source") == "DA3"
+            and metrics_run.get("use_perfect_depth_map") is False
+            and str(metrics_run.get("kind_depth_map", "")).upper() == "DA3"
+            and metrics_run.get("renderer_zbuf_role")
+            == "rgb_geometry_render_depth_discarded"
+            and metrics_run.get("gt_feedback_to_da3") is False
+            and isinstance(da3_model_id, str)
+            and bool(da3_model_id)
+            and isinstance(da3_model_revision, str)
+            and bool(da3_model_revision)
+            and isinstance(da3_model_config_sha, str)
+            and re.fullmatch(r"[0-9a-f]{64}", da3_model_config_sha)
+            and isinstance(da3_model_weights_sha, str)
+            and re.fullmatch(r"[0-9a-f]{64}", da3_model_weights_sha)
+            and config.get("da3_model_config_sha256") == da3_model_config_sha
+            and config.get("da3_model_weights_sha256") == da3_model_weights_sha
+            and manifest.get("da3_model_config_sha256") == da3_model_config_sha
+            and manifest.get("da3_model_weights_sha256") == da3_model_weights_sha
+            and isinstance(da3_source_revision, str)
+            and bool(da3_source_revision)
+            and isinstance(da3_source_tree_sha, str)
+            and re.fullmatch(r"[0-9a-f]{64}", da3_source_tree_sha)
+            and import_tree_sha == da3_source_tree_sha
+            and da3_window_size is not None
+            and da3_window_size > 0
+            and da3_process_res is not None
+            and da3_process_res > 0
+            and isinstance(da3_process_res_method, str)
+            and bool(da3_process_res_method)
+            and da3_confidence_declared
+            and (
+                da3_confidence_percentile is None
+                or (
+                    not isinstance(da3_confidence_percentile, bool)
+                    and isinstance(da3_confidence_percentile, (int, float))
+                    and 0 <= da3_confidence_percentile <= 100
+                )
+            )
+            and type(da3_cache_enabled) is bool
+            and (
+                not da3_cache_enabled
+                or (isinstance(da3_cache_dir, str) and bool(da3_cache_dir))
+            )
+            and not isinstance(da3_scale, bool)
+            and isinstance(da3_scale, (int, float))
+            and da3_scale > 0
+            and da3_output_height == face_size
+            and da3_output_width == face_size
+            and pioneer.get("depth_source") == "DA3"
+            and bundle_count is not None
+            and _as_int(pioneer.get("depth_inference_count"))
+            == 6 * bundle_count
+            and _as_int(pioneer.get("artifact_committed_bundle_count"))
+            == bundle_count
+            and _as_int(pioneer.get("depth_cache_hit_count"))
+            == da3_bundle_cache_hits
+            and da3_face_rows_verified
+            and config_snapshot_verified
+            and profile_snapshot_verified
+            and macarons_params_snapshot_verified
+            and config.get("macarons_params_sha256")
+            == manifest_macarons_params_sha
+            and metrics_run.get("macarons_params_sha256")
+            == manifest_macarons_params_sha
+            and run_commit_verified
+            and runtime_snapshot_integrity_verified
+            and calibration_snapshot_verified
+            and calibration_semantics_verified
+            and import_source_verified
+            and asset_hashes_verified
+            and texture_tree_verified
+            and model_cache_hashes_verified
+        )
+    )
+    if (
+        depth_source == "DA3"
+        and effective_status == "PASS"
+        and not da3_cubemap_provenance_verified
+    ):
+        effective_status = "UNKNOWN"
+        completion_verified = False
+        status_reason = "DA3 cubemap RGB-only face provenance is incomplete."
+
     normalized_config = {
         "scene": scene,
         "planner": planner,
@@ -701,6 +1162,27 @@ def build_record(
         "debug_profile": debug_profile,
         "coverage_comparable": coverage_comparable,
     }
+    if depth_source == "DA3":
+        normalized_config.update(
+            {
+                "da3_model_id": da3_model_id,
+                "da3_model_revision": da3_model_revision,
+                "da3_model_config_sha256": da3_model_config_sha,
+                "da3_model_weights_sha256": da3_model_weights_sha,
+                "da3_source_revision": da3_source_revision,
+                "da3_source_tree_sha256": da3_source_tree_sha,
+                "da3_window_size": da3_window_size,
+                "da3_process_res": da3_process_res,
+                "da3_process_res_method": da3_process_res_method,
+                "da3_scene_units_per_meter": da3_scale,
+                "da3_output_height": da3_output_height,
+                "da3_output_width": da3_output_width,
+                "da3_confidence_percentile": da3_confidence_percentile,
+                "da3_cache_enabled": da3_cache_enabled,
+                "macarons_params_sha256": manifest_macarons_params_sha,
+                "scene_texture_tree_sha256": manifest_texture_tree_sha,
+            }
+        )
     if issue == "PAN-11":
         normalized_config.update(
             {
@@ -720,7 +1202,6 @@ def build_record(
     normalized_hash = _canonical_sha256(normalized_config)
 
     artifact_count = len(artifact_set.get("artifacts", {}))
-    scientific_full = _full_commit(scientific_run_commit)
     final_full = _full_commit(final_branch_commit)
     checks = {
         "run_commit_full": scientific_full is not None,
@@ -728,6 +1209,36 @@ def build_record(
         "normalized_config_fingerprint": True,
         "artifact_hash_set": artifact_count > 0,
         "completion_status_evidence": completion_verified,
+        "run_commit_matches_manifest": (
+            run_commit_verified if depth_source == "DA3" else True
+        ),
+        "runtime_snapshot_integrity": (
+            runtime_snapshot_integrity_verified if depth_source == "DA3" else True
+        ),
+        "config_snapshot_hash": (
+            config_snapshot_verified if depth_source == "DA3" else True
+        ),
+        "debug_profile_snapshot_hash": (
+            profile_snapshot_verified if depth_source == "DA3" else True
+        ),
+        "macarons_params_snapshot_hash": (
+            macarons_params_snapshot_verified if depth_source == "DA3" else True
+        ),
+        "da3_import_source_binding": (
+            import_source_verified if depth_source == "DA3" else True
+        ),
+        "scene_asset_hashes": (
+            asset_hashes_verified if depth_source == "DA3" else True
+        ),
+        "scene_texture_tree_hash": (
+            texture_tree_verified if depth_source == "DA3" else True
+        ),
+        "da3_model_cache_hashes": (
+            model_cache_hashes_verified if depth_source == "DA3" else True
+        ),
+        "scene_calibration_semantics": (
+            calibration_semantics_verified if depth_source == "DA3" else True
+        ),
     }
     score = sum(bool(value) for value in checks.values()) / len(checks)
     grade = "A" if score >= 0.8 else ("B" if score >= 0.6 else "C")
@@ -849,6 +1360,38 @@ def build_record(
             "beam_width": beam_width,
             "beam_steps": beam_steps,
             "proxy_points": proxy_points,
+            "depth_source": depth_source,
+            "depth_inference_count": _as_int(
+                pioneer.get("depth_inference_count")
+            ),
+            "depth_cache_hit_count": _as_int(
+                pioneer.get("depth_cache_hit_count")
+            ),
+            "artifact_committed_bundle_count": _as_int(
+                pioneer.get("artifact_committed_bundle_count")
+            ),
+            "da3_cubemap_provenance_verified": (
+                da3_cubemap_provenance_verified
+            ),
+            **(
+                {
+                    "da3_window_size": da3_window_size,
+                    "da3_process_res": da3_process_res,
+                    "da3_process_res_method": da3_process_res_method,
+                    "da3_output_size": [da3_output_height, da3_output_width],
+                    "da3_confidence_percentile": da3_confidence_percentile,
+                    "da3_cache_enabled": da3_cache_enabled,
+                    "da3_cache_dir": da3_cache_dir,
+                    "da3_import_package_tree_sha256": import_tree_sha,
+                    "da3_calibration_sha256": manifest_calibration_sha,
+                    "da3_model_config_sha256": da3_model_config_sha,
+                    "da3_model_weights_sha256": da3_model_weights_sha,
+                    "macarons_params_sha256": manifest_macarons_params_sha,
+                    "scene_texture_tree_sha256": manifest_texture_tree_sha,
+                }
+                if depth_source == "DA3"
+                else {}
+            ),
             **(
                 {
                     "pioneer_planner_state_mode": planner_state_mode,

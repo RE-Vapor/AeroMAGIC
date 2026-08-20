@@ -1,0 +1,80 @@
+{
+  "numGPU": 0,
+  "dataset_path": "./data/Macarons++",
+  "test_scenes": [
+    "HKUST"
+  ],
+  "params_name": "macarons_default_training_config.json",
+  "macarons_params_sha256": "e3ccb7b7083090c73fbed75f7f4e50bb01685ed1c527afe47b4bf204ad5156c9",
+  "model_name": "trained_macarons.pth",
+  "results_json_name": "pan11_pioneer_hkust_position_only_da3_20obs_a1_results.json",
+  "test_resolution": 0.05,
+  "use_perfect_depth_map": false,
+  "kind_depth_map": "DA3",
+  "compute_collision": false,
+  "load_json": false,
+  "random_seed": 8,
+  "torch_seed": 9,
+  "lmdb_dir_name": "pan11_pioneer_hkust_position_only_da3_20obs_a1_lmdb",
+  "validation_memory_dir_name": "pan11_pioneer_hkust_position_only_da3_20obs_a1_memory",
+  "beam_width": 3,
+  "beam_steps": 3,
+  "debug_profile": "pioneer-20",
+  "planning_observation_mode": "cubemap6",
+  "pioneer_face_size": 256,
+  "pioneer_face_fov_degrees": 90.0,
+  "pioneer_voxel_size": 0.05,
+  "pioneer_planner_state_mode": "position_only",
+  "pioneer_cubemap_rig_frame": "world",
+  "pioneer_cubemap_extrinsics_version": "pytorch3d-world-axes-v1",
+  "pioneer_canonical_orientation_indices": [
+    2,
+    0
+  ],
+  "scene_texture_atlas_size": 4,
+  "scene_texture_tree_sha256": "7d01172e4b7d24a1d7e998e5ef8dbdae2f4c0aa003d486ec4bc8bf627c5618d9",
+  "validation_use_occupied_pose": true,
+  "validation_require_complete_occupied_pose": true,
+  "pioneer_filter_occupied_position_candidates": true,
+  "scene_mesh_transforms": {
+    "HKUST": {
+      "axis_order": [
+        0,
+        1,
+        2
+      ],
+      "axis_signs": [
+        1,
+        1,
+        1
+      ],
+      "translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": 1.0
+    }
+  },
+  "experiment_metrics_enabled": true,
+  "experiment_run_id": "PAN-11-pioneer-hkust-position-only-da3-20obs-a1",
+  "experiment_run_dir": "../experiments/runs/integration-all-experiments/PAN-11-pioneer-hkust-position-only-da3-20obs/attempt-001",
+  "experiment_metrics_dir": "../experiments/runs/integration-all-experiments/PAN-11-pioneer-hkust-position-only-da3-20obs/attempt-001/metrics",
+  "da3_model_id": "depth-anything/DA3NESTED-GIANT-LARGE",
+  "da3_model_revision": "8615eefb62f2db4f8d6ebaa59160086981672829",
+  "da3_model_config_sha256": "09adf89474017e717bc05aa86fd3a378708ba8914b036d61874eced328069468",
+  "da3_model_weights_sha256": "8899faf998dedbc230261ab736fa57015280727399429122d44d4f9e7aac2ddd",
+  "da3_source_revision": "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4",
+  "da3_source_tree_sha256": "65fa2f4829a831512492964fcda6dcdf9193b5cbefa1862c4773c054b4b77633",
+  "da3_window_size": 3,
+  "da3_process_res": 504,
+  "da3_process_res_method": "upper_bound_resize",
+  "da3_output_height": 256,
+  "da3_output_width": 256,
+  "da3_confidence_percentile": null,
+  "da3_cache_enabled": true,
+  "da3_cache_dir": "../experiments/runs/integration-all-experiments/PAN-11-pioneer-hkust-position-only-da3-20obs/attempt-001/da3_cache",
+  "da3_scene_units_per_meter": {
+    "HKUST": 0.2
+  }
+}

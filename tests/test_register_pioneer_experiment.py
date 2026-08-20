@@ -20,6 +20,49 @@ def _write_json(path, value):
     path.write_text(json.dumps(value, indent=2), encoding="utf-8")
 
 
+def _write_bundle_transactions(capture_dir, bundles):
+    face_names = ("front", "back", "left", "right", "up", "down")
+    commit_root = capture_dir.parent / ".pioneer_bundle_commits"
+    image_root = capture_dir.parent / "imgs"
+    commit_root.mkdir(parents=True, exist_ok=True)
+    for bundle in bundles:
+        bundle_id = int(bundle["bundle_id"])
+        frame_dir = capture_dir / f"{bundle_id:06d}"
+        image_dir = image_root / f"{bundle_id:06d}"
+        frame_dir.mkdir(parents=True, exist_ok=True)
+        image_dir.mkdir(parents=True, exist_ok=True)
+        for filename in ["bundle.pt", *(f"{name}.pt" for name in face_names)]:
+            (frame_dir / filename).write_bytes(
+                f"frame:{bundle_id}:{filename}".encode("utf-8")
+            )
+        for filename in (f"{name}.png" for name in face_names):
+            (image_dir / filename).write_bytes(
+                f"image:{bundle_id}:{filename}".encode("utf-8")
+            )
+        frame_hashes = {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in frame_dir.iterdir()
+        }
+        image_hashes = {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in image_dir.iterdir()
+        }
+        _write_json(
+            commit_root / f"{bundle_id:06d}.json",
+            {
+                "schema_version": 1,
+                "transaction_version": "pioneer-bundle-commit-v1",
+                "bundle_id": bundle_id,
+                "face_names": list(face_names),
+                "png_committed": True,
+                "frame_sha256": frame_hashes,
+                "image_sha256": image_hashes,
+            },
+        )
+        bundle["artifact_transaction_version"] = "pioneer-bundle-commit-v1"
+        bundle["artifact_committed"] = True
+
+
 def _base_registry():
     return {
         "schema_version": "1.0",
@@ -67,7 +110,10 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
             encoding="utf-8",
         )
         (run_dir / "status.txt").write_text(
-            "started_at_utc=2026-08-20T00:00:00Z\nexit_code=0\n",
+            "started_at_utc=2026-08-20T00:00:00Z\n"
+            "snapshot_integrity_preflight=PASS\n"
+            "snapshot_integrity_postflight=PASS\n"
+            "exit_code=0\n",
             encoding="utf-8",
         )
         (run_dir / "run.log").write_text("verified run bytes\n", encoding="utf-8")
@@ -416,6 +462,344 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
                 issue="PAN-11",
             )
             self.assertEqual(missing_occupancy_counter["status"], "UNKNOWN")
+
+    def test_pan11_da3_pass_requires_all_six_rgb_only_face_provenance_rows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            registry_json, registry_md, run_dir, online = self._fixture(temporary)
+            config_path = run_dir / "config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config.update(
+                {
+                    "use_perfect_depth_map": False,
+                    "kind_depth_map": "DA3",
+                    "da3_model_id": "depth-anything/DA3NESTED-GIANT-LARGE",
+                    "da3_model_revision": "model-revision",
+                    "da3_model_config_sha256": hashlib.sha256(
+                        b"evidence-da3_model_config"
+                    ).hexdigest(),
+                    "da3_model_weights_sha256": hashlib.sha256(
+                        b"evidence-da3_model_weights"
+                    ).hexdigest(),
+                    "da3_source_revision": "source-revision",
+                    "da3_source_tree_sha256": "a" * 64,
+                    "da3_window_size": 3,
+                    "da3_process_res": 504,
+                    "da3_process_res_method": "upper_bound_resize",
+                    "da3_output_height": 128,
+                    "da3_output_width": 128,
+                    "da3_confidence_percentile": None,
+                    "da3_cache_enabled": True,
+                    "da3_cache_dir": "isolated-cache",
+                    "da3_scene_units_per_meter": {"eiffel": 0.25},
+                }
+            )
+            _write_json(config_path, config)
+            profile_snapshot = run_dir / "debug_profile.json"
+            _write_json(
+                profile_snapshot,
+                {
+                    "name": "quick",
+                    "debug_only": True,
+                    "coverage_comparable": False,
+                    "overrides": {},
+                },
+            )
+            macarons_params_snapshot = run_dir / "macarons_params.json"
+            _write_json(
+                macarons_params_snapshot,
+                {"znear": 0.5, "zfar": 70.0},
+            )
+            calibration_snapshot = run_dir / "scene_metric_calibrations.json"
+            asset_dir = Path(temporary) / "evidence"
+            asset_dir.mkdir()
+            asset_payloads = {
+                name: f"evidence-{name}".encode("utf-8")
+                for name in (
+                    "adaptation_manifest",
+                    "mesh",
+                    "settings",
+                    "occupied_pose",
+                    "planner_weight",
+                    "da3_model_config",
+                    "da3_model_weights",
+                    "material_000",
+                    "texture_0000",
+                )
+            }
+            assets = {}
+            for name, payload in asset_payloads.items():
+                path = asset_dir / name
+                path.write_bytes(payload)
+                assets[name] = {
+                    "path": str(path.resolve()),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                }
+            _write_json(
+                calibration_snapshot,
+                {
+                    "calibrations": {
+                        "eiffel": {
+                            "scene_units_per_meter": 0.25,
+                            **{
+                                name: assets[name]
+                                for name in (
+                                    "adaptation_manifest",
+                                    "mesh",
+                                    "settings",
+                                )
+                            },
+                        }
+                    }
+                },
+            )
+            pinned_root = "/evidence/source-revision"
+            texture_tree = hashlib.sha256()
+            for name in ("material_000", "texture_0000"):
+                path = Path(assets[name]["path"])
+                texture_tree.update(
+                    path.resolve()
+                    .relative_to(asset_dir.resolve())
+                    .as_posix()
+                    .encode("utf-8")
+                )
+                texture_tree.update(b"\0")
+                texture_tree.update(assets[name]["sha256"].encode("ascii"))
+                texture_tree.update(b"\n")
+            config["scene_texture_tree_sha256"] = texture_tree.hexdigest()
+            config["macarons_params_sha256"] = hashlib.sha256(
+                macarons_params_snapshot.read_bytes()
+            ).hexdigest()
+            _write_json(config_path, config)
+            (run_dir / "manifest.txt").write_text(
+                "\n".join(
+                    (
+                        "planner=pioneer",
+                        "observation_mode=cubemap6",
+                        "scene=eiffel",
+                        "config=config.json",
+                        "config_snapshot=config.json",
+                        f"config_sha256={hashlib.sha256(config_path.read_bytes()).hexdigest()}",
+                        "debug_profile=quick",
+                        "debug_profile_snapshot=debug_profile.json",
+                        f"debug_profile_sha256={hashlib.sha256(profile_snapshot.read_bytes()).hexdigest()}",
+                        "runtime_snapshot_integrity_contract=pre-and-post-v1",
+                        "macarons_params_snapshot=macarons_params.json",
+                        f"macarons_params_sha256={hashlib.sha256(macarons_params_snapshot.read_bytes()).hexdigest()}",
+                        f"git_commit={BASE_COMMIT}",
+                        f"da3_import_source_root={pinned_root}",
+                        f"da3_import_origin={pinned_root}/depth_anything_3/api.py",
+                        f"da3_import_package_tree_sha256={'a' * 64}",
+                        "da3_model_config_sha256="
+                        + hashlib.sha256(b"evidence-da3_model_config").hexdigest(),
+                        "da3_model_weights_sha256="
+                        + hashlib.sha256(b"evidence-da3_model_weights").hexdigest(),
+                        f"da3_calibration_sha256={hashlib.sha256(calibration_snapshot.read_bytes()).hexdigest()}",
+                        "scene_asset_hashes_verified=true",
+                        f"scene_texture_tree_sha256={texture_tree.hexdigest()}",
+                        "scene_asset_provenance_json="
+                        + json.dumps(assets, separators=(",", ":")),
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            metrics = json.loads(online.read_text(encoding="utf-8"))
+            metrics["renderer_gt_read"] = False
+            metrics["run"].update(
+                {
+                    "depth_source": "DA3",
+                    "use_perfect_depth_map": False,
+                    "kind_depth_map": "DA3",
+                    "renderer_zbuf_role": "rgb_geometry_render_depth_discarded",
+                    "gt_feedback_to_da3": False,
+                    "da3_model_id": "depth-anything/DA3NESTED-GIANT-LARGE",
+                    "da3_model_revision": "model-revision",
+                    "da3_model_config_sha256": hashlib.sha256(
+                        b"evidence-da3_model_config"
+                    ).hexdigest(),
+                    "da3_model_weights_sha256": hashlib.sha256(
+                        b"evidence-da3_model_weights"
+                    ).hexdigest(),
+                    "da3_source_revision": "source-revision",
+                    "da3_source_tree_sha256": "a" * 64,
+                    "da3_window_size": 3,
+                    "da3_process_res": 504,
+                    "da3_process_res_method": "upper_bound_resize",
+                    "da3_output_height": 128,
+                    "da3_output_width": 128,
+                    "da3_confidence_percentile": None,
+                    "da3_cache_enabled": True,
+                    "da3_cache_dir": "isolated-cache",
+                    "da3_scene_units_per_meter": {"eiffel": 0.25},
+                    "scene_texture_tree_sha256": texture_tree.hexdigest(),
+                    "macarons_params_sha256": hashlib.sha256(
+                        macarons_params_snapshot.read_bytes()
+                    ).hexdigest(),
+                    "pioneer_planner_state_mode": "position_only",
+                    "planner_state_dimension": 3,
+                    "pioneer_cubemap_rig_frame": "world",
+                    "pioneer_cubemap_extrinsics_version": "pytorch3d-world-axes-v1",
+                    "pioneer_canonical_orientation_indices": [2, 0],
+                    "pioneer_filter_occupied_position_candidates": True,
+                    "validation_require_complete_occupied_pose": True,
+                }
+            )
+            totals = {
+                "parent_beam_count": 4,
+                "raw_action_proposal_count": 24,
+                "translation_action_proposal_count": 24,
+                "orientation_action_proposal_count": 0,
+                "generated_candidate_count": 20,
+                "valid_state_candidate_count": 12,
+                "observed_rejected_candidate_count": 2,
+                "occupied_rejected_candidate_count": 6,
+                "collision_rejected_candidate_count": 3,
+                "rendered_candidate_count": 9,
+                "retained_beam_count": 6,
+                "search_seconds": 0.75,
+            }
+            metrics["planner_search"] = {
+                "state_mode": "position_only",
+                "state_dimension": 3,
+                "cubemap_rig_frame": "world",
+                "cubemap_extrinsics_version": "pytorch3d-world-axes-v1",
+                "totals": totals,
+            }
+            metrics["pioneer_observation"].update(
+                {
+                    "depth_source": "DA3",
+                    "depth_inference_count": 18,
+                    "depth_cache_hit_count": 0,
+                    "artifact_committed_bundle_count": 3,
+                }
+            )
+            for bundle in metrics["pioneer_observation"]["bundles"]:
+                bundle.update(
+                    {
+                        "depth_source": "DA3",
+                        "rgb_source": "gt_mesh",
+                        "renderer_zbuf_read": False,
+                        "depth_inference_count": 6,
+                        "depth_cache_hit_count": 0,
+                        "depth_faces": [
+                            {
+                                "face_name": name,
+                                "depth_source": "DA3",
+                                "cache_key": f"cache-{bundle['bundle_id']}-{name}",
+                                "cache_hit": False,
+                                "stream_id": f"pioneer/cubemap6/world/{name}",
+                                "pose_conditioned": False,
+                                "provider_valid_pixels": 4,
+                                "provider_error_pixels": 4,
+                                "planning_pixels": 4,
+                                "provider_seconds": 0.1,
+                                "adapter_version": "4",
+                                "source_revision": "source-revision",
+                                "source_tree_sha256": "a" * 64,
+                                "preprocess": {
+                                    "window_size": 3,
+                                    "process_res": 504,
+                                    "process_res_method": "upper_bound_resize",
+                                    "output_size": [128, 128],
+                                    "confidence_percentile": None,
+                                },
+                                "scale": {
+                                    "scene": "eiffel",
+                                    "scene_units_per_meter": 0.25,
+                                    "znear": 0.5,
+                                    "zfar": 70.0,
+                                },
+                                "model": {
+                                    "id": "depth-anything/DA3NESTED-GIANT-LARGE",
+                                    "revision": "model-revision",
+                                    "config_sha256": hashlib.sha256(
+                                        b"evidence-da3_model_config"
+                                    ).hexdigest(),
+                                    "weights_sha256": hashlib.sha256(
+                                        b"evidence-da3_model_weights"
+                                    ).hexdigest(),
+                                },
+                            }
+                            for name in bundle["face_names"]
+                        ],
+                    }
+                )
+            _write_bundle_transactions(
+                Path(metrics["capture_dir"]),
+                metrics["pioneer_observation"]["bundles"],
+            )
+            _write_json(online, metrics)
+
+            kwargs = {
+                "registry_json": registry_json,
+                "registry_md": registry_md,
+                "run_dir": run_dir,
+                "online_metrics": online,
+                "scientific_run_commit": BASE_COMMIT,
+                "final_branch_commit": FINAL_COMMIT,
+                "status": "PASS",
+                "issue": "PAN-11",
+            }
+            record = register_experiment(
+                experiment_id="PAN-11-PIONEER-EIFFEL-POSITION-ONLY-DA3",
+                **kwargs,
+            )
+            self.assertEqual(record["status"], "PASS")
+            self.assertEqual(record["depth_source"], "DA3")
+            self.assertTrue(
+                record["pioneer"]["da3_cubemap_provenance_verified"]
+            )
+            self.assertEqual(record["pioneer"]["depth_inference_count"], 18)
+            normalized = record["provenance"]["normalized_config"]
+            self.assertEqual(normalized["da3_window_size"], 3)
+            self.assertEqual(normalized["da3_process_res"], 504)
+            self.assertEqual(
+                normalized["da3_process_res_method"], "upper_bound_resize"
+            )
+            self.assertIsNone(normalized["da3_confidence_percentile"])
+            self.assertIs(normalized["da3_cache_enabled"], True)
+
+            marker_path = (
+                Path(metrics["capture_dir"]).parent
+                / ".pioneer_bundle_commits"
+                / "000001.json"
+            )
+            marker_bytes = marker_path.read_bytes()
+            marker_path.unlink()
+            missing_transaction = register_experiment(
+                experiment_id=(
+                    "PAN-11-PIONEER-EIFFEL-POSITION-ONLY-DA3-MISSING-TRANSACTION"
+                ),
+                **kwargs,
+            )
+            self.assertEqual(missing_transaction["status"], "UNKNOWN")
+            marker_path.write_bytes(marker_bytes)
+
+            metrics["pioneer_observation"]["bundles"][1]["depth_faces"][5][
+                "depth_source"
+            ] = "GT"
+            _write_json(online, metrics)
+            invalid = register_experiment(
+                experiment_id="PAN-11-PIONEER-EIFFEL-POSITION-ONLY-DA3-INVALID",
+                **kwargs,
+            )
+            self.assertEqual(invalid["status"], "UNKNOWN")
+            self.assertFalse(
+                invalid["pioneer"]["da3_cubemap_provenance_verified"]
+            )
+
+            metrics["pioneer_observation"]["bundles"][1]["depth_faces"][5][
+                "depth_source"
+            ] = "DA3"
+            del metrics["run"]["da3_process_res_method"]
+            _write_json(online, metrics)
+            missing_preprocess_contract = register_experiment(
+                experiment_id=(
+                    "PAN-11-PIONEER-EIFFEL-POSITION-ONLY-DA3-MISSING-PREPROCESS"
+                ),
+                **kwargs,
+            )
+            self.assertEqual(missing_preprocess_contract["status"], "UNKNOWN")
 
     def test_cli_issue_defaults_to_pan10_and_accepts_pan11(self):
         required = [

@@ -11,6 +11,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import tempfile
 import threading
 from typing import Any, Callable, Mapping, Optional, Sequence, Tuple
@@ -20,8 +21,11 @@ import numpy as np
 from .depth_sources import DepthFrame, DepthObservation, DepthProvider
 
 
-DA3_ADAPTER_VERSION = "3"
+DA3_ADAPTER_VERSION = "4"
 DA3_SOURCE_REVISION = "3d835ec1a5802d64a8b8b15f817a1ab54809bfe4"
+DA3_SOURCE_TREE_SHA256 = (
+    "65fa2f4829a831512492964fcda6dcdf9193b5cbefa1862c4773c054b4b77633"
+)
 DA3_DEFAULT_MODEL = "depth-anything/DA3NESTED-GIANT-LARGE"
 DA3_DEFAULT_MODEL_REVISION = "8615eefb62f2db4f8d6ebaa59160086981672829"
 
@@ -107,6 +111,19 @@ def _first_scalar(value: Any, name: str) -> float:
 
 def camera_intrinsics(camera: Any, height: int, width: int) -> np.ndarray:
     """Return pixel-space OpenCV intrinsics for the camera's PyTorch3D projection."""
+
+    explicit_intrinsics = getattr(camera, "K_pixel", None)
+    if explicit_intrinsics is not None:
+        matrix = _as_numpy(explicit_intrinsics, dtype=np.float32)
+        if matrix.shape == (1, 3, 3):
+            matrix = matrix[0]
+        if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
+            raise ValueError(
+                "Explicit camera K_pixel must be one finite 3x3 matrix."
+            )
+        if matrix[0, 0] <= 0.0 or matrix[1, 1] <= 0.0:
+            raise ValueError("Explicit camera K_pixel focal lengths must be positive.")
+        return matrix.copy()
 
     fov_camera = getattr(camera, "fov_camera", None)
     if fov_camera is None:
@@ -311,9 +328,32 @@ class DA3DepthProvider(DepthProvider):
         self.model_revision = str(
             _config_value(config, "da3_model_revision", DA3_DEFAULT_MODEL_REVISION)
         )
+        self.model_config_sha256 = _config_value(
+            config, "da3_model_config_sha256", None
+        )
+        self.model_weights_sha256 = _config_value(
+            config, "da3_model_weights_sha256", None
+        )
+        for name, value in (
+            ("da3_model_config_sha256", self.model_config_sha256),
+            ("da3_model_weights_sha256", self.model_weights_sha256),
+        ):
+            if value is not None and (
+                not isinstance(value, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", value)
+            ):
+                raise ValueError(f"{name} must be a lowercase SHA256.")
         self.source_revision = str(
             _config_value(config, "da3_source_revision", DA3_SOURCE_REVISION)
         )
+        self.source_tree_sha256 = _config_value(
+            config, "da3_source_tree_sha256", DA3_SOURCE_TREE_SHA256
+        )
+        if (
+            not isinstance(self.source_tree_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", self.source_tree_sha256)
+        ):
+            raise ValueError("da3_source_tree_sha256 must be a lowercase SHA256.")
         if self.source_revision != DA3_SOURCE_REVISION:
             raise ValueError(
                 "da3_source_revision must match the dependency pinned in environment.yml: "
@@ -379,8 +419,14 @@ class DA3DepthProvider(DepthProvider):
             raise ValueError("DA3 requires camera.save_dir_path for captured RGB frames.")
         return Path(save_dir) / f"{frame_id}.pt"
 
-    def _cache_root(self, camera: Any) -> Path:
-        return self.cache_dir or (Path(camera.save_dir_path) / ".da3_cache")
+    def _cache_root(
+        self, camera: Any, cache_namespace: Optional[str] = None
+    ) -> Path:
+        root = self.cache_dir or (Path(camera.save_dir_path) / ".da3_cache")
+        if cache_namespace is None:
+            return root
+        namespace_digest = hashlib.sha256(cache_namespace.encode("utf-8")).hexdigest()
+        return root / "streams" / namespace_digest[:16]
 
     def _load_window(
         self, camera: Any, frame_id: int
@@ -399,18 +445,65 @@ class DA3DepthProvider(DepthProvider):
             frames.append(frame)
         return frame_ids, frames
 
+    def _explicit_window(
+        self, observation: DepthObservation
+    ) -> Optional[Tuple[Sequence[int], Sequence[Mapping[str, Any]]]]:
+        frame_ids = observation.frame_ids
+        frame_history = observation.frame_history
+        if frame_ids is None and frame_history is None:
+            return None
+        if frame_ids is None or frame_history is None:
+            raise ValueError(
+                "Explicit DA3 observations require both frame_ids and frame_history."
+            )
+        if len(frame_ids) != len(frame_history) or not frame_ids:
+            raise ValueError(
+                "Explicit DA3 frame_ids and frame_history must be non-empty and equal length."
+            )
+        normalized_ids = []
+        normalized_frames = []
+        for frame_id, frame in zip(frame_ids, frame_history):
+            if isinstance(frame_id, bool) or not isinstance(frame_id, int):
+                raise ValueError("Explicit DA3 frame_ids must be integers.")
+            missing = [name for name in ("rgb", "R", "T") if name not in frame]
+            if missing:
+                raise KeyError(
+                    "Explicit DA3 RGB history is missing keys: " + ", ".join(missing)
+                )
+            normalized_ids.append(frame_id)
+            normalized_frames.append(
+                {name: frame[name] for name in ("rgb", "R", "T")}
+            )
+        if any(
+            current <= previous
+            for previous, current in zip(normalized_ids, normalized_ids[1:])
+        ):
+            raise ValueError("Explicit DA3 frame_ids must be strictly increasing.")
+        return (
+            normalized_ids[-self.window_size :],
+            normalized_frames[-self.window_size :],
+        )
+
     def _metadata(
         self,
         frame_ids: Sequence[int],
         rgbs: Sequence[np.ndarray],
         extrinsics: np.ndarray,
         intrinsics: np.ndarray,
+        stream_id: str,
     ) -> Mapping[str, Any]:
         return {
             "adapter_version": DA3_ADAPTER_VERSION,
             "source": self.source,
             "source_revision": self.source_revision,
-            "model": {"id": self.model_id, "revision": self.model_revision},
+            "source_tree_sha256": self.source_tree_sha256,
+            "stream": {"id": stream_id},
+            "model": {
+                "id": self.model_id,
+                "revision": self.model_revision,
+                "config_sha256": self.model_config_sha256,
+                "weights_sha256": self.model_weights_sha256,
+            },
             "preprocess": {
                 "window_size": self.window_size,
                 "process_res": self.process_res,
@@ -532,11 +625,21 @@ class DA3DepthProvider(DepthProvider):
 
     def get_frame(self, observation: DepthObservation) -> DepthFrame:
         camera = observation.camera
-        frame_id = int(getattr(camera, "n_frames_captured", 0)) - 1
-        if frame_id < 0:
-            raise ValueError("DA3 requires at least one captured RGB frame.")
-
-        frame_ids, frames = self._load_window(camera, frame_id)
+        explicit_window = self._explicit_window(observation)
+        if explicit_window is None:
+            frame_id = int(getattr(camera, "n_frames_captured", 0)) - 1
+            if frame_id < 0:
+                raise ValueError("DA3 requires at least one captured RGB frame.")
+            frame_ids, frames = self._load_window(camera, frame_id)
+        else:
+            frame_ids, frames = explicit_window
+            frame_id = int(frame_ids[-1])
+        cache_namespace = observation.cache_namespace
+        if cache_namespace is not None and (
+            not isinstance(cache_namespace, str) or not cache_namespace.strip()
+        ):
+            raise ValueError("DA3 cache_namespace must be a non-empty string.")
+        stream_id = cache_namespace.strip() if cache_namespace else "default"
         rgbs = [_rgb_uint8(frame["rgb"]) for frame in frames]
         extrinsics = np.stack(
             [pytorch3d_to_opencv_extrinsics(frame["R"], frame["T"]) for frame in frames]
@@ -545,13 +648,15 @@ class DA3DepthProvider(DepthProvider):
             [camera_intrinsics(camera, rgb.shape[0], rgb.shape[1]) for rgb in rgbs]
         )
         pose_conditioned = _has_translation_baseline(extrinsics)
-        metadata = self._metadata(frame_ids, rgbs, extrinsics, intrinsics)
+        metadata = self._metadata(
+            frame_ids, rgbs, extrinsics, intrinsics, stream_id
+        )
         metadata["camera"]["pose_conditioned"] = pose_conditioned
         model_extrinsics = extrinsics.copy()
         model_extrinsics[:, :3, 3] /= self.scene_units_per_meter
         metadata["camera"]["model_extrinsics_meters"] = model_extrinsics.tolist()
         key = _cache_key(metadata)
-        cache_path = self._cache_root(camera) / f"{key}.npz"
+        cache_path = self._cache_root(camera, cache_namespace) / f"{key}.npz"
 
         arrays = self._load_cache(cache_path, metadata) if self.cache_enabled else None
         cache_hit = arrays is not None
@@ -581,7 +686,7 @@ class DA3DepthProvider(DepthProvider):
                     "degenerate_model_pose_alignment"
                 )
                 key = _cache_key(metadata)
-                cache_path = self._cache_root(camera) / f"{key}.npz"
+                cache_path = self._cache_root(camera, cache_namespace) / f"{key}.npz"
                 prediction = model.inference(
                     image=list(rgbs),
                     extrinsics=None,

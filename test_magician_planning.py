@@ -14,6 +14,15 @@ if __name__ == '__main__':
                                                          'Default is "test_in_default_scenes_config.json".')
     parser.add_argument('--debug-profile', choices=DEBUG_PROFILE_NAMES,
                         help='optional compute-only debug overlay for the selected config')
+    parser.add_argument(
+        '--debug-profiles-dir',
+        default=debug_profiles_dir,
+        help='directory containing the selected debug profile JSON',
+    )
+    parser.add_argument(
+        '--macarons-params-path',
+        help='optional immutable snapshot of the base Macarons parameter JSON',
+    )
 
     args = parser.parse_args()
 
@@ -27,7 +36,7 @@ if __name__ == '__main__':
     debug_profile = apply_debug_profile(
         test_params,
         cli_profile_name=args.debug_profile,
-        profiles_dir=debug_profiles_dir,
+        profiles_dir=args.debug_profiles_dir,
     )
     if debug_profile is not None:
         print(
@@ -47,4 +56,5 @@ if __name__ == '__main__':
                  compute_collision=test_params.compute_collision,
                  load_json=test_params.load_json,
                  dataset_path=test_params.dataset_path,
-                 test_params=test_params)
+                 test_params=test_params,
+                 params_path_override=args.macarons_params_path)

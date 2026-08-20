@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import math
 import os
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,9 @@ class DepthObservation:
 
     camera: Any
     device: Any = None
+    frame_ids: Optional[Sequence[int]] = None
+    frame_history: Optional[Sequence[Mapping[str, Any]]] = None
+    cache_namespace: Optional[str] = None
 
 
 @dataclass(frozen=True)

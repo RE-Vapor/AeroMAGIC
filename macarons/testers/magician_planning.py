@@ -273,19 +273,28 @@ def _position_only_spec(camera, params):
     )
 
 
-def _capture_planner_observation(camera, mesh, rgb_provider, params):
+def _capture_planner_observation(
+    camera, mesh, rgb_provider, params, depth_provider=None
+):
     if not _uses_pioneer_observation(params):
         return capture_planning_observation(camera, mesh, rgb_provider)
     if rgb_provider is not None:
         raise ValueError(
             "PIONEER cubemap6 currently supports the Python mesh/GT RGB provider only."
         )
+    cubemap_depth_provider = depth_provider
+    if (
+        cubemap_depth_provider is not None
+        and str(getattr(cubemap_depth_provider, "source", "")).upper() == "GT"
+    ):
+        cubemap_depth_provider = None
     bundle = capture_cubemap_observation(
         camera=camera,
         mesh=mesh,
         face_size=int(getattr(params, "pioneer_face_size", 256)),
         ambient_light_intensity=float(params.ambient_light_intensity),
         rgb_provider=rgb_provider,
+        depth_provider=cubemap_depth_provider,
         rig_frame=_pioneer_rig_frame(params),
     )
     camera.last_observation_bundle = bundle
@@ -530,6 +539,7 @@ def setup_test_camera(params,
                       mirrored_scene=False,
                       mirrored_axis=None,
                       rgb_provider=None,
+                      depth_provider=None,
                       require_complete_occupied_pose=False):
     """
     Setup the camera used for prediction.
@@ -601,6 +611,7 @@ def setup_test_camera(params,
             mesh,
             rgb_provider,
             params,
+            depth_provider,
         )
         camera.pioneer_state_index_history = torch.vstack(
             (camera.pioneer_state_index_history, start_state_idx.reshape(1, 3))
@@ -618,7 +629,9 @@ def setup_test_camera(params,
         # as soon as it moves.  This path is retained only for controlled A/B
         # comparison and backwards compatibility.
         camera.initialize_camera(start_cam_idx=start_cam_idx)
-        _capture_planner_observation(camera, mesh, rgb_provider, params)
+        _capture_planner_observation(
+            camera, mesh, rgb_provider, params, depth_provider
+        )
         print(
             "PIONEER planner contract: state=legacy_pose5d dim=5 "
             f"rig={_pioneer_rig_frame(params)} "
@@ -626,7 +639,9 @@ def setup_test_camera(params,
         )
     else:
         camera.initialize_camera(start_cam_idx=start_cam_idx)
-        _capture_planner_observation(camera, mesh, rgb_provider, params)
+        _capture_planner_observation(
+            camera, mesh, rgb_provider, params, depth_provider
+        )
 
     return camera
 
@@ -697,7 +712,9 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
             if metrics_recorder is not None:
                 metrics_recorder.record_observation_bundle(
                     frame_data["bundle_stats"],
-                    provider_seconds=float(getattr(bundle, "capture_seconds", 0.0)),
+                    provider_seconds=float(
+                        bundle.metadata.get("depth_provider_seconds", 0.0)
+                    ),
                     geometry_seconds=float(frame_data.get("geometry_seconds", 0.0)),
                 )
             return frame_data
@@ -1456,6 +1473,7 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                     mesh,
                     rgb_provider,
                     params,
+                    depth_provider,
                 )
                 camera.pioneer_state_index_history = torch.vstack(
                     (
@@ -1464,7 +1482,9 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                     )
                 )
             else:
-                _capture_planner_observation(camera, mesh, rgb_provider, params)
+                _capture_planner_observation(
+                    camera, mesh, rgb_provider, params, depth_provider
+                )
             interpolation_step += 1
 
         pose_i += 1
@@ -1483,9 +1503,14 @@ def run_magician_test(params_name,
              compute_collision=False,
              load_json=False,
              dataset_path=None,
-             test_params=None):
+             test_params=None,
+             params_path_override=None):
 
-    params_path = os.path.join(configs_dir, params_name)
+    params_path = (
+        os.path.abspath(params_path_override)
+        if params_path_override is not None
+        else os.path.join(configs_dir, params_name)
+    )
     weights_path = os.path.join(weights_dir, model_name)
     results_json_path = os.path.join(results_dir, results_json_name)
 
@@ -1584,9 +1609,11 @@ def run_magician_test(params_name,
             or params.pioneer_face_size < 16
         ):
             raise ValueError("pioneer_face_size must be an integer >= 16.")
-        if not use_perfect_depth_map:
+        if not use_perfect_depth_map and str(
+            getattr(test_params, "kind_depth_map", "")
+        ).strip().upper() != "DA3":
             raise ValueError(
-                "PIONEER cubemap6 pilot currently requires use_perfect_depth_map=true."
+                "PIONEER cubemap6 non-GT depth currently supports only DA3."
             )
         if params.n_interpolation_steps != 1:
             raise ValueError(
@@ -1734,6 +1761,7 @@ def run_magician_test(params_name,
                                            device, training_frames_path,
                                            mirrored_scene=mirrored_scene, mirrored_axis=mirrored_axis,
                                            rgb_provider=rgb_provider,
+                                           depth_provider=depth_provider,
                                            require_complete_occupied_pose=(
                                                require_complete_occupied_pose
                                            ))

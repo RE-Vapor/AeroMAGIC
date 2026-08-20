@@ -22,6 +22,7 @@ from PIL import Image
 
 FACE_NAMES = ("front", "back", "left", "right", "up", "down")
 DEFAULT_MAX_BUNDLE_ROWS = 6
+BUNDLE_TRANSACTION_VERSION = "pioneer-bundle-commit-v1"
 
 
 def _read_json(path: Path) -> Mapping[str, Any]:
@@ -100,7 +101,7 @@ def _sample_indices(length: int, limit: int) -> np.ndarray:
 
 def _resolve_bundle_images(
     metrics: Mapping[str, Any],
-) -> tuple[list[Mapping[str, Any]], Path, list[list[Path]]]:
+) -> tuple[list[Mapping[str, Any]], Path, list[list[Path]], list[Path]]:
     pioneer = metrics.get("pioneer_observation")
     if not isinstance(pioneer, Mapping):
         raise ValueError("metrics.pioneer_observation is required")
@@ -116,7 +117,11 @@ def _resolve_bundle_images(
     if capture_dir.name != "frames":
         raise ValueError("metrics.capture_dir must point to the trajectory frames directory")
     images_root = capture_dir.parent / "imgs"
+    commit_root = capture_dir.parent / ".pioneer_bundle_commits"
+    run = metrics.get("run") if isinstance(metrics.get("run"), Mapping) else {}
+    requires_transaction = str(run.get("depth_source", "GT")).upper() != "GT"
     image_rows: list[list[Path]] = []
+    commit_markers: list[Path] = []
     seen_ids: set[int] = set()
     for bundle in bundles:
         if not isinstance(bundle, Mapping):
@@ -133,8 +138,47 @@ def _resolve_bundle_images(
         missing = [str(path) for path in row if not path.is_file()]
         if missing:
             raise FileNotFoundError("missing PIONEER face images: " + ", ".join(missing))
+        transaction_version = bundle.get("artifact_transaction_version")
+        if requires_transaction or transaction_version is not None:
+            if (
+                transaction_version != BUNDLE_TRANSACTION_VERSION
+                or bundle.get("artifact_committed") is not True
+            ):
+                raise ValueError(
+                    f"bundle {bundle_id} lacks a committed artifact transaction"
+                )
+            marker_path = commit_root / f"{bundle_id:06d}.json"
+            if not marker_path.is_file():
+                raise FileNotFoundError(
+                    f"missing PIONEER bundle commit marker: {marker_path}"
+                )
+            marker = _read_json(marker_path)
+            expected_frame_names = {"bundle.pt", *(f"{name}.pt" for name in FACE_NAMES)}
+            expected_image_names = {f"{name}.png" for name in FACE_NAMES}
+            frame_hashes = marker.get("frame_sha256")
+            image_hashes = marker.get("image_sha256")
+            if (
+                marker.get("transaction_version") != BUNDLE_TRANSACTION_VERSION
+                or int(marker.get("bundle_id", -1)) != bundle_id
+                or tuple(marker.get("face_names") or ()) != FACE_NAMES
+                or marker.get("png_committed") is not True
+                or not isinstance(frame_hashes, Mapping)
+                or set(frame_hashes) != expected_frame_names
+                or not isinstance(image_hashes, Mapping)
+                or set(image_hashes) != expected_image_names
+            ):
+                raise ValueError(f"invalid PIONEER bundle commit marker: {marker_path}")
+            for filename, expected_sha in frame_hashes.items():
+                artifact = capture_dir / f"{bundle_id:06d}" / filename
+                if not artifact.is_file() or _sha256(artifact) != expected_sha:
+                    raise ValueError(f"bundle frame hash mismatch: {artifact}")
+            for filename, expected_sha in image_hashes.items():
+                artifact = images_root / f"{bundle_id:06d}" / filename
+                if not artifact.is_file() or _sha256(artifact) != expected_sha:
+                    raise ValueError(f"bundle image hash mismatch: {artifact}")
+            commit_markers.append(marker_path)
         image_rows.append(row)
-    return bundles, images_root, image_rows
+    return bundles, images_root, image_rows, commit_markers
 
 
 def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -177,7 +221,8 @@ def generate_preview(
     if not scene or start_index < 0:
         raise ValueError("metrics scene and start_index are required")
 
-    bundles, images_root, image_rows = _resolve_bundle_images(metrics)
+    bundles, images_root, image_rows, commit_markers = _resolve_bundle_images(metrics)
+    capture_dir = Path(str(metrics["capture_dir"])).expanduser().resolve()
     if len(bundles) > 1 and max_bundle_rows < 2:
         raise ValueError(
             "max_bundle_rows must be at least two for a multi-bundle run"
@@ -316,8 +361,10 @@ def generate_preview(
     cuda = metrics.get("cuda") or {}
     trajectory_metrics = metrics.get("trajectory") or {}
     run_id = str(run.get("run_id") or "PIONEER")
+    depth_source = str(run.get("depth_source") or "GT").strip().upper()
     figure.suptitle(
-        f"{scene} — PIONEER cubemap6 — {len(bundles)} full-sphere observations",
+        f"{scene} — PIONEER cubemap6/{depth_source} — "
+        f"{len(bundles)} full-sphere observations",
         fontsize=22,
         y=0.995,
     )
@@ -373,11 +420,18 @@ def generate_preview(
             "capture_images_root": str(images_root),
             "capture_images_tree_sha256": _tree_sha256(image_paths, images_root),
             "capture_image_count": len(image_paths),
+            "bundle_commit_marker_count": len(commit_markers),
+            "bundle_commit_markers_tree_sha256": (
+                _tree_sha256(commit_markers, capture_dir.parent)
+                if commit_markers
+                else None
+            ),
         },
         "summary": {
             "planner": "pioneer",
             "scene": scene,
             "start_index": start_index,
+            "depth_source": depth_source,
             "bundle_count": len(bundles),
             "displayed_bundle_count": len(displayed_bundles),
             "displayed_bundle_ids": [

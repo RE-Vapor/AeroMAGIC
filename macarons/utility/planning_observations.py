@@ -8,11 +8,16 @@ planning observation: all six perspective faces share an optical centre, use a
 
 from __future__ import annotations
 
+import json
+import hashlib
 import math
 import os
+import shutil
+import tempfile
 import time
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 import torch
@@ -26,6 +31,8 @@ from pytorch3d.renderer import (
 )
 from pytorch3d.renderer.mesh.renderer import MeshRendererWithFragments
 from torchvision.transforms import functional as vision_functional
+
+from .depth_sources import DepthObservation
 
 
 CUBEMAP_FACE_NAMES: Tuple[str, ...] = (
@@ -42,6 +49,15 @@ CUBEMAP_RIG_FRAME_WORLD = "world"
 CUBEMAP_BODY_EXTRINSICS_VERSION = "pytorch3d-body-aligned-v1"
 CUBEMAP_WORLD_EXTRINSICS_VERSION = "pytorch3d-world-axes-v1"
 _CUBEMAP_RIG_FRAMES = (CUBEMAP_RIG_FRAME_BODY, CUBEMAP_RIG_FRAME_WORLD)
+PIONEER_BUNDLE_TRANSACTION_VERSION = "pioneer-bundle-commit-v1"
+
+
+def _file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 # Directions are expressed in PyTorch3D view coordinates: +X is left, +Y is
 # up, and +Z points into the scene.  The polar faces use an explicit up vector
@@ -325,17 +341,24 @@ def capture_cubemap_observation(
     ambient_light_intensity: float = 1.0,
     *,
     rgb_provider: Any = None,
+    depth_provider: Any = None,
     save_frame: bool = True,
     dir_path: Optional[str] = None,
     save_png: bool = True,
     max_faces_per_bin: int = 200000,
     rig_frame: str = CUBEMAP_RIG_FRAME_BODY,
 ) -> ObservationBundle:
-    """Render and optionally persist one six-face GT-mesh observation.
+    """Render and optionally persist one six-face planning observation.
 
     ``rgb_provider`` is an explicit provider boundary for a future UE5/remote
     capture adapter.  This implementation accepts only ``None`` and therefore
     cannot accidentally label a local mesh render as a UE5 observation.
+
+    When ``depth_provider`` is omitted, the mesh renderer's z-buffer preserves
+    the legacy GT-depth behavior.  A non-GT provider receives only an in-memory
+    temporal history of ``rgb/R/T`` for each stable face stream; renderer depth
+    and masks never cross that boundary.  The camera counter, face histories,
+    and artifacts are committed only after all six provider calls succeed.
 
     ``camera.n_frames_captured`` is increased once after all six faces succeed.
     """
@@ -349,6 +372,22 @@ def capture_cubemap_observation(
         raise ValueError("face_size must be an integer >= 2.")
     if camera.fov_camera is None:
         raise ValueError("camera.fov_camera must be initialized before capture.")
+    depth_source = "GT"
+    if depth_provider is not None:
+        depth_source = str(getattr(depth_provider, "source", "")).strip().upper()
+        if not depth_source or depth_source == "GT":
+            raise ValueError(
+                "Non-GT cubemap depth providers must expose a non-GT source name."
+            )
+        provider_window_size = getattr(depth_provider, "window_size", None)
+        if (
+            isinstance(provider_window_size, bool)
+            or not isinstance(provider_window_size, int)
+            or provider_window_size < 1
+        ):
+            raise ValueError(
+                "Non-GT cubemap depth providers must expose a positive window_size."
+            )
 
     rig_frame = _validate_rig_frame(rig_frame)
     extrinsics_version = _cubemap_extrinsics_version(rig_frame)
@@ -385,6 +424,12 @@ def capture_cubemap_observation(
     _synchronize_if_cuda(device)
     capture_started = time.perf_counter()
     faces = []
+    depth_provider_seconds = 0.0
+    depth_cache_hit_count = 0
+    existing_histories = getattr(camera, "_pioneer_depth_face_history", {})
+    existing_history_ids = getattr(camera, "_pioneer_depth_face_history_ids", {})
+    pending_histories: Dict[str, Tuple[Mapping[str, Any], ...]] = {}
+    pending_history_ids: Dict[str, Tuple[int, ...]] = {}
 
     with torch.no_grad():
         for name in CUBEMAP_FACE_NAMES:
@@ -395,8 +440,111 @@ def capture_cubemap_observation(
                 rgb_chw, float(getattr(camera, "contrast_factor", 1.0))
             )
             rgb = rgb_chw.permute(0, 2, 3, 1).contiguous()
-            depth = fragments.zbuf.contiguous()
-            valid_mask = torch.isfinite(depth) & (depth > 0.0)
+            provider_metadata: Dict[str, Any] = {}
+            if depth_provider is None:
+                depth = fragments.zbuf.contiguous()
+                valid_mask = torch.isfinite(depth) & (depth > 0.0)
+                face_rgb = rgb
+                face_source = "gt_mesh"
+            else:
+                current_rgb_frame = {
+                    "rgb": rgb.detach(),
+                    "R": face_camera.R.detach(),
+                    "T": face_camera.T.detach(),
+                }
+                face_history = tuple(existing_histories.get(name, ())) + (
+                    current_rgb_frame,
+                )
+                face_history_ids = tuple(existing_history_ids.get(name, ())) + (
+                    bundle_id,
+                )
+                face_history = face_history[-provider_window_size:]
+                face_history_ids = face_history_ids[-provider_window_size:]
+                output_root = dir_path if dir_path is not None else camera.save_dir_path
+                provider_camera = SimpleNamespace(
+                    fov_camera=face_camera,
+                    save_dir_path=output_root,
+                    n_frames_captured=bundle_id + 1,
+                    K_pixel=K_pixel,
+                )
+                _synchronize_if_cuda(device)
+                provider_started = time.perf_counter()
+                depth_frame = depth_provider.get_frame(
+                    DepthObservation(
+                        camera=provider_camera,
+                        device=device,
+                        frame_ids=face_history_ids,
+                        frame_history=face_history,
+                        cache_namespace=f"pioneer/cubemap6/{rig_frame}/{name}",
+                    )
+                )
+                _synchronize_if_cuda(device)
+                provider_elapsed = time.perf_counter() - provider_started
+                depth_provider_seconds += provider_elapsed
+                returned_source = str(depth_frame.source).strip().upper()
+                if returned_source != depth_source:
+                    raise ValueError(
+                        "Cubemap depth provider returned source "
+                        f"{depth_frame.source!r}; expected {depth_source!r}."
+                    )
+                face_rgb = torch.as_tensor(depth_frame.rgb, device=device)
+                depth = torch.as_tensor(depth_frame.depth_z, device=device)
+                provider_valid_mask = torch.as_tensor(
+                    depth_frame.valid_mask, device=device
+                ).bool()
+                provider_error_mask = torch.as_tensor(
+                    depth_frame.error_mask, device=device
+                ).bool()
+                expected_shape = (1, face_size, face_size, 1)
+                if tuple(depth.shape) != expected_shape:
+                    raise ValueError(
+                        "Cubemap provider depth must have shape "
+                        f"{expected_shape}; received {tuple(depth.shape)}."
+                    )
+                if tuple(provider_valid_mask.shape) != expected_shape or tuple(
+                    provider_error_mask.shape
+                ) != expected_shape:
+                    raise ValueError(
+                        "Cubemap provider masks must match the provider depth shape."
+                    )
+                if tuple(face_rgb.shape) != (1, face_size, face_size, 3):
+                    raise ValueError(
+                        "Cubemap provider RGB must have shape "
+                        f"(1, {face_size}, {face_size}, 3); received "
+                        f"{tuple(face_rgb.shape)}."
+                    )
+                returned_R = torch.as_tensor(depth_frame.R, device=device)
+                returned_T = torch.as_tensor(depth_frame.T, device=device)
+                if not torch.allclose(
+                    returned_R, face_camera.R, rtol=1e-5, atol=1e-5
+                ) or not torch.allclose(
+                    returned_T, face_camera.T, rtol=1e-5, atol=1e-5
+                ):
+                    raise ValueError(
+                        "Cubemap depth provider changed the face camera extrinsics."
+                    )
+                valid_mask = (
+                    provider_valid_mask
+                    & provider_error_mask
+                    & torch.isfinite(depth)
+                    & (depth > 0.0)
+                )
+                cache_metadata = dict(depth_frame.cache_metadata)
+                if cache_metadata.get("cache_hit") is True:
+                    depth_cache_hit_count += 1
+                provider_metadata = {
+                    "provider_valid_mask": provider_valid_mask,
+                    "provider_error_mask": provider_error_mask,
+                    "depth_cache_metadata": cache_metadata,
+                    "depth_provider_seconds": provider_elapsed,
+                }
+                if depth_frame.confidence is not None:
+                    provider_metadata["provider_confidence"] = torch.as_tensor(
+                        depth_frame.confidence, device=device
+                    )
+                pending_histories[name] = face_history
+                pending_history_ids[name] = face_history_ids
+                face_source = depth_source
             pytorch3d_projection = (
                 face_camera.get_projection_transform().get_matrix().clone()
             )
@@ -409,7 +557,7 @@ def capture_cubemap_observation(
                 PerspectiveFaceObservation(
                     name=name,
                     camera=face_camera,
-                    rgb=rgb,
+                    rgb=face_rgb,
                     depth_z=depth,
                     valid_mask=valid_mask,
                     R=face_camera.R,
@@ -421,7 +569,10 @@ def capture_cubemap_observation(
                         "zfar": zfar,
                         "znear": znear,
                         "observation_mode": "cubemap6",
-                        "source": "gt_mesh",
+                        "source": face_source,
+                        "depth_source": depth_source,
+                        "rgb_source": "gt_mesh",
+                        "renderer_zbuf_read": depth_provider is None,
                         "rig_frame": rig_frame,
                         "extrinsics_version": extrinsics_version,
                         "capture_timestamp_unix_ns": capture_timestamp_unix_ns,
@@ -431,6 +582,7 @@ def capture_cubemap_observation(
                         "T_opencv_world_to_camera": T_opencv,
                         "projection_convention": "pytorch3d_row_vector_ndc",
                         "pixel_intrinsics_convention": "opencv_x_right_y_down",
+                        **provider_metadata,
                     },
                 )
             )
@@ -444,7 +596,13 @@ def capture_cubemap_observation(
         capture_seconds=capture_seconds,
         metadata={
             "observation_mode": "cubemap6",
-            "source": "gt_mesh",
+            "source": "gt_mesh" if depth_provider is None else depth_source,
+            "depth_source": depth_source,
+            "rgb_source": "gt_mesh",
+            "renderer_zbuf_read": depth_provider is None,
+            "depth_inference_count": 0 if depth_provider is None else len(faces),
+            "depth_provider_seconds": float(depth_provider_seconds),
+            "depth_cache_hit_count": int(depth_cache_hit_count),
             "rig_frame": rig_frame,
             "extrinsics_version": extrinsics_version,
             "face_size": face_size,
@@ -457,33 +615,136 @@ def capture_cubemap_observation(
 
     output_root = dir_path if dir_path is not None else camera.save_dir_path
     if save_frame and output_root is not None:
+        os.makedirs(output_root, exist_ok=True)
         bundle_dir = os.path.join(output_root, f"{bundle_id:06d}")
-        os.makedirs(bundle_dir, exist_ok=True)
-        for face in bundle.faces:
-            torch.save(
-                face.frame_dict(cpu=True),
-                os.path.join(bundle_dir, f"{face.name}.pt"),
-            )
-        torch.save(
-            {
-                "bundle_id": bundle_id,
-                "face_names": CUBEMAP_FACE_NAMES,
-                "camera_center": center.detach().cpu(),
-                "capture_seconds": capture_seconds,
-                **bundle.metadata,
-            },
-            os.path.join(bundle_dir, "bundle.pt"),
+        image_parent = os.path.join(os.path.dirname(output_root), "imgs")
+        image_dir = os.path.join(image_parent, f"{bundle_id:06d}")
+        transaction_parent = (
+            os.path.dirname(output_root)
+            if os.path.basename(os.path.normpath(output_root)) == "frames"
+            else output_root
         )
+        commit_parent = os.path.join(
+            transaction_parent, ".pioneer_bundle_commits"
+        )
+        commit_path = os.path.join(commit_parent, f"{bundle_id:06d}.json")
+        if any(os.path.exists(path) for path in (bundle_dir, image_dir, commit_path)):
+            raise FileExistsError(
+                "Refusing to reuse an existing or incomplete PIONEER bundle "
+                f"transaction: {bundle_id:06d}"
+            )
+        bundle.metadata["artifact_transaction_version"] = (
+            PIONEER_BUNDLE_TRANSACTION_VERSION
+        )
+        bundle.metadata["artifact_committed"] = True
+        bundle_temporary = tempfile.mkdtemp(
+            prefix=f".{bundle_id:06d}.tmp-", dir=output_root
+        )
+        image_temporary = None
+        image_committed = False
+        bundle_committed = False
+        commit_temporary = None
         if save_png:
-            image_root = os.path.join(os.path.dirname(output_root), "imgs", f"{bundle_id:06d}")
-            os.makedirs(image_root, exist_ok=True)
+            os.makedirs(image_parent, exist_ok=True)
+            image_temporary = tempfile.mkdtemp(
+                prefix=f".{bundle_id:06d}.tmp-", dir=image_parent
+            )
+        try:
             for face in bundle.faces:
-                image = face.rgb[0].permute(2, 0, 1).detach().cpu().clamp(0.0, 1.0)
-                vision_functional.to_pil_image(image).save(
-                    os.path.join(image_root, f"{face.name}.png")
+                torch.save(
+                    face.frame_dict(cpu=True),
+                    os.path.join(bundle_temporary, f"{face.name}.pt"),
                 )
+            torch.save(
+                {
+                    "bundle_id": bundle_id,
+                    "face_names": CUBEMAP_FACE_NAMES,
+                    "camera_center": center.detach().cpu(),
+                    "capture_seconds": capture_seconds,
+                    **bundle.metadata,
+                },
+                os.path.join(bundle_temporary, "bundle.pt"),
+            )
+            frame_hashes = {
+                name: _file_sha256(os.path.join(bundle_temporary, name))
+                for name in [
+                    *(f"{face.name}.pt" for face in bundle.faces),
+                    "bundle.pt",
+                ]
+            }
+            image_hashes: Dict[str, str] = {}
+            if save_png:
+                assert image_temporary is not None
+                for face in bundle.faces:
+                    image = (
+                        face.rgb[0]
+                        .permute(2, 0, 1)
+                        .detach()
+                        .cpu()
+                        .clamp(0.0, 1.0)
+                    )
+                    vision_functional.to_pil_image(image).save(
+                        os.path.join(image_temporary, f"{face.name}.png")
+                    )
+                image_hashes = {
+                    f"{face.name}.png": _file_sha256(
+                        os.path.join(image_temporary, f"{face.name}.png")
+                    )
+                    for face in bundle.faces
+                }
+                os.replace(image_temporary, image_dir)
+                image_temporary = None
+                image_committed = True
+            os.replace(bundle_temporary, bundle_dir)
+            bundle_temporary = None
+            bundle_committed = True
+            os.makedirs(commit_parent, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix=f".{bundle_id:06d}.tmp-",
+                suffix=".json",
+                dir=commit_parent,
+                delete=False,
+            ) as handle:
+                commit_temporary = handle.name
+                json.dump(
+                    {
+                        "schema_version": 1,
+                        "transaction_version": PIONEER_BUNDLE_TRANSACTION_VERSION,
+                        "bundle_id": bundle_id,
+                        "face_names": list(CUBEMAP_FACE_NAMES),
+                        "png_committed": bool(save_png),
+                        "frame_sha256": frame_hashes,
+                        "image_sha256": image_hashes,
+                    },
+                    handle,
+                    sort_keys=True,
+                )
+                handle.write("\n")
+            os.replace(commit_temporary, commit_path)
+            commit_temporary = None
+        except BaseException:
+            if bundle_committed:
+                shutil.rmtree(bundle_dir)
+            if image_committed:
+                shutil.rmtree(image_dir)
+            raise
+        finally:
+            if bundle_temporary is not None:
+                shutil.rmtree(bundle_temporary, ignore_errors=True)
+            if image_temporary is not None:
+                shutil.rmtree(image_temporary, ignore_errors=True)
+            if commit_temporary is not None and os.path.exists(commit_temporary):
+                os.unlink(commit_temporary)
+    else:
+        bundle.metadata["artifact_transaction_version"] = None
+        bundle.metadata["artifact_committed"] = False
 
     # The bundle, not each face, is the unit of observation and history.
+    if depth_provider is not None:
+        camera._pioneer_depth_face_history = pending_histories
+        camera._pioneer_depth_face_history_ids = pending_history_ids
     camera.n_frames_captured += 1
     camera.last_observation_bundle = bundle
     return bundle
@@ -791,6 +1052,47 @@ def process_cubemap_observation(
 
     raw_count = int(concatenated_points.shape[0])
     unique_count = int(part_pc.shape[0])
+    depth_faces = []
+    for face in bundle.faces:
+        cache_metadata = dict(face.metadata.get("depth_cache_metadata", {}) or {})
+        camera_metadata = dict(cache_metadata.get("camera", {}) or {})
+        stream_metadata = dict(cache_metadata.get("stream", {}) or {})
+        provider_valid_mask = face.metadata.get("provider_valid_mask")
+        provider_error_mask = face.metadata.get("provider_error_mask")
+        depth_faces.append(
+            {
+                "face_name": face.name,
+                "depth_source": face.metadata.get(
+                    "depth_source", bundle.metadata.get("depth_source", "GT")
+                ),
+                "cache_key": cache_metadata.get("cache_key"),
+                "cache_hit": cache_metadata.get("cache_hit"),
+                "stream_id": stream_metadata.get("id"),
+                "pose_conditioned": camera_metadata.get("pose_conditioned"),
+                "provider_valid_pixels": (
+                    int(provider_valid_mask.sum().item())
+                    if provider_valid_mask is not None
+                    else None
+                ),
+                "provider_error_pixels": (
+                    int(provider_error_mask.sum().item())
+                    if provider_error_mask is not None
+                    else None
+                ),
+                "planning_pixels": int(face.valid_mask.sum().item()),
+                "provider_seconds": float(
+                    face.metadata.get("depth_provider_seconds", 0.0)
+                ),
+                "adapter_version": cache_metadata.get("adapter_version"),
+                "source_revision": cache_metadata.get("source_revision"),
+                "source_tree_sha256": cache_metadata.get(
+                    "source_tree_sha256"
+                ),
+                "model": cache_metadata.get("model"),
+                "preprocess": cache_metadata.get("preprocess"),
+                "scale": cache_metadata.get("scale"),
+            }
+        )
     stats = {
         "observation_mode": "cubemap6",
         "bundle_id": int(bundle.bundle_id),
@@ -804,6 +1106,25 @@ def process_cubemap_observation(
         "capture_timestamp_unix_ns": bundle.metadata.get(
             "capture_timestamp_unix_ns"
         ),
+        "depth_source": bundle.metadata.get("depth_source", "GT"),
+        "rgb_source": bundle.metadata.get("rgb_source", "gt_mesh"),
+        "renderer_zbuf_read": bool(
+            bundle.metadata.get("renderer_zbuf_read", True)
+        ),
+        "depth_inference_count": int(
+            bundle.metadata.get("depth_inference_count", 0)
+        ),
+        "depth_provider_seconds": float(
+            bundle.metadata.get("depth_provider_seconds", 0.0)
+        ),
+        "depth_cache_hit_count": int(
+            bundle.metadata.get("depth_cache_hit_count", 0)
+        ),
+        "depth_faces": depth_faces,
+        "artifact_transaction_version": bundle.metadata.get(
+            "artifact_transaction_version"
+        ),
+        "artifact_committed": bool(bundle.metadata.get("artifact_committed", False)),
         "real_face_render_count": int(bundle.render_count),
         "capture_seconds": float(bundle.capture_seconds),
         "geometry_seconds": float(geometry_seconds),

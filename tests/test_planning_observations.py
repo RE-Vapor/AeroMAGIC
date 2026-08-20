@@ -1,3 +1,5 @@
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +8,7 @@ from unittest import mock
 
 import torch
 
+from macarons.utility.depth_sources import DepthFrame
 from macarons.utility.planning_observations import (
     CUBEMAP_FACE_NAMES,
     CUBEMAP_RIG_FRAME_WORLD,
@@ -212,6 +215,18 @@ class PlanningObservationTests(unittest.TestCase):
                 persisted_bundle["rig_frame"], CUBEMAP_RIG_FRAME_WORLD
             )
             self.assertTrue(all(key in persisted_face for key in ("R", "T", "K")))
+            marker_path = (
+                bundle_dir.parent / ".pioneer_bundle_commits" / "000000.json"
+            )
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                marker["transaction_version"], "pioneer-bundle-commit-v1"
+            )
+            self.assertEqual(set(marker["frame_sha256"]), {
+                "bundle.pt", "front.pt", "back.pt", "left.pt", "right.pt",
+                "up.pt", "down.pt",
+            })
+            self.assertEqual(marker["image_sha256"], {})
 
     def test_failed_sixth_face_does_not_commit_bundle_counter(self):
         camera = self._capture_camera(bundle_id=7)
@@ -234,6 +249,231 @@ class PlanningObservationTests(unittest.TestCase):
         self.assertEqual(renderer.calls, 6)
         self.assertEqual(camera.n_frames_captured, 7)
         self.assertIs(camera.last_observation_bundle, sentinel)
+
+    def test_da3_depth_provider_receives_rgb_only_face_histories(self):
+        class FakeDA3Provider:
+            source = "DA3"
+            window_size = 2
+
+            def __init__(self):
+                self.calls = []
+
+            def get_frame(self, observation):
+                self.calls.append(observation)
+                latest = observation.frame_history[-1]
+                self.assert_rgb_only(observation.frame_history)
+                depth = torch.full((1, 2, 2, 1), 2.0)
+                valid = torch.ones(1, 2, 2, 1, dtype=torch.bool)
+                error = valid.clone()
+                return DepthFrame(
+                    rgb=latest["rgb"],
+                    depth_z=depth,
+                    valid_mask=valid,
+                    error_mask=error,
+                    R=latest["R"],
+                    T=latest["T"],
+                    confidence=torch.ones_like(depth),
+                    source=self.source,
+                    frame_id=observation.frame_ids[-1],
+                    cache_metadata={
+                        "cache_key": f"cache-{len(self.calls)}",
+                        "cache_enabled": True,
+                        "cache_hit": False,
+                    },
+                )
+
+            @staticmethod
+            def assert_rgb_only(history):
+                for frame in history:
+                    if set(frame) != {"rgb", "R", "T"}:
+                        raise AssertionError(f"non-RGB provider fields: {sorted(frame)}")
+
+        camera = self._capture_camera()
+        provider = FakeDA3Provider()
+        renderer = self._fake_renderer()
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "macarons.utility.planning_observations._build_square_renderer",
+            return_value=renderer,
+        ):
+            first = capture_cubemap_observation(
+                camera,
+                mesh=object(),
+                face_size=2,
+                depth_provider=provider,
+                save_png=False,
+                dir_path=temporary,
+                rig_frame=CUBEMAP_RIG_FRAME_WORLD,
+            )
+            second = capture_cubemap_observation(
+                camera,
+                mesh=object(),
+                face_size=2,
+                depth_provider=provider,
+                save_png=False,
+                dir_path=temporary,
+                rig_frame=CUBEMAP_RIG_FRAME_WORLD,
+            )
+
+            self.assertEqual(camera.n_frames_captured, 2)
+            self.assertEqual(first.metadata["depth_source"], "DA3")
+            self.assertEqual(first.metadata["depth_inference_count"], 6)
+            self.assertEqual(second.metadata["depth_source"], "DA3")
+            self.assertEqual(len(provider.calls), 12)
+            self.assertEqual(
+                [len(call.frame_history) for call in provider.calls[:6]], [1] * 6
+            )
+            self.assertEqual(
+                [len(call.frame_history) for call in provider.calls[6:]], [2] * 6
+            )
+            self.assertEqual(
+                [tuple(call.frame_ids) for call in provider.calls[6:]],
+                [(0, 1)] * 6,
+            )
+            first_streams = [call.cache_namespace for call in provider.calls[:6]]
+            second_streams = [call.cache_namespace for call in provider.calls[6:]]
+            self.assertEqual(len(set(first_streams)), 6)
+            self.assertEqual(first_streams, second_streams)
+            for face in second.faces:
+                self.assertEqual(face.metadata["depth_source"], "DA3")
+                self.assertEqual(face.metadata["rgb_source"], "gt_mesh")
+                self.assertTrue(torch.equal(face.depth_z, torch.full_like(face.depth_z, 2.0)))
+            persisted = torch.load(Path(temporary) / "000001" / "front.pt")
+            self.assertEqual(persisted["depth_source"], "DA3")
+            self.assertIn("provider_valid_mask", persisted)
+            self.assertIn("provider_error_mask", persisted)
+
+    def test_da3_sixth_face_failure_does_not_commit_bundle_or_artifacts(self):
+        class FailingProvider:
+            source = "DA3"
+            window_size = 1
+
+            def __init__(self):
+                self.calls = 0
+
+            def get_frame(self, observation):
+                self.calls += 1
+                if self.calls == 6:
+                    raise RuntimeError("synthetic DA3 face failure")
+                latest = observation.frame_history[-1]
+                depth = torch.ones(1, 2, 2, 1)
+                mask = torch.ones_like(depth, dtype=torch.bool)
+                return DepthFrame(
+                    rgb=latest["rgb"],
+                    depth_z=depth,
+                    valid_mask=mask,
+                    error_mask=mask,
+                    R=latest["R"],
+                    T=latest["T"],
+                    source=self.source,
+                    frame_id=observation.frame_ids[-1],
+                )
+
+        camera = self._capture_camera(bundle_id=7)
+        sentinel = object()
+        camera.last_observation_bundle = sentinel
+        provider = FailingProvider()
+        renderer = self._fake_renderer()
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "macarons.utility.planning_observations._build_square_renderer",
+            return_value=renderer,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "synthetic DA3 face failure"):
+                capture_cubemap_observation(
+                    camera,
+                    mesh=object(),
+                    face_size=2,
+                    depth_provider=provider,
+                    save_png=False,
+                    dir_path=temporary,
+                    rig_frame=CUBEMAP_RIG_FRAME_WORLD,
+                )
+            self.assertFalse((Path(temporary) / "000007").exists())
+        self.assertEqual(provider.calls, 6)
+        self.assertEqual(camera.n_frames_captured, 7)
+        self.assertIs(camera.last_observation_bundle, sentinel)
+
+    def test_persistence_failure_leaves_no_partial_bundle_or_images(self):
+        camera = self._capture_camera(bundle_id=4)
+        sentinel = object()
+        camera.last_observation_bundle = sentinel
+        renderer = self._fake_renderer()
+        original_save = torch.save
+        save_calls = 0
+
+        def fail_mid_bundle(value, path, *args, **kwargs):
+            nonlocal save_calls
+            save_calls += 1
+            if save_calls == 4:
+                raise OSError("synthetic persistence failure")
+            return original_save(value, path, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temporary, mock.patch(
+            "macarons.utility.planning_observations._build_square_renderer",
+            return_value=renderer,
+        ), mock.patch(
+            "macarons.utility.planning_observations.torch.save",
+            side_effect=fail_mid_bundle,
+        ):
+            frame_root = Path(temporary) / "frames"
+            with self.assertRaisesRegex(OSError, "synthetic persistence failure"):
+                capture_cubemap_observation(
+                    camera,
+                    mesh=object(),
+                    face_size=2,
+                    save_png=True,
+                    dir_path=str(frame_root),
+                    rig_frame=CUBEMAP_RIG_FRAME_WORLD,
+                )
+            self.assertFalse((frame_root / "000004").exists())
+            self.assertFalse((frame_root.parent / "imgs" / "000004").exists())
+            self.assertFalse(
+                (frame_root.parent / ".pioneer_bundle_commits" / "000004.json").exists()
+            )
+            self.assertEqual(list(frame_root.glob(".000004.tmp-*")), [])
+        self.assertEqual(camera.n_frames_captured, 4)
+        self.assertIs(camera.last_observation_bundle, sentinel)
+
+    def test_transaction_rename_failures_never_leave_a_commit_marker(self):
+        renderer = self._fake_renderer()
+        original_replace = os.replace
+        for failed_replace in (1, 2, 3):
+            with self.subTest(failed_replace=failed_replace), tempfile.TemporaryDirectory() as temporary:
+                camera = self._capture_camera(bundle_id=5)
+                sentinel = object()
+                camera.last_observation_bundle = sentinel
+                replace_calls = 0
+
+                def fail_selected_replace(source, destination):
+                    nonlocal replace_calls
+                    replace_calls += 1
+                    if replace_calls == failed_replace:
+                        raise OSError(f"synthetic replace failure {failed_replace}")
+                    return original_replace(source, destination)
+
+                frame_root = Path(temporary) / "frames"
+                with mock.patch(
+                    "macarons.utility.planning_observations._build_square_renderer",
+                    return_value=renderer,
+                ), mock.patch(
+                    "macarons.utility.planning_observations.os.replace",
+                    side_effect=fail_selected_replace,
+                ):
+                    with self.assertRaisesRegex(OSError, "synthetic replace failure"):
+                        capture_cubemap_observation(
+                            camera,
+                            mesh=object(),
+                            face_size=2,
+                            save_png=True,
+                            dir_path=str(frame_root),
+                            rig_frame=CUBEMAP_RIG_FRAME_WORLD,
+                        )
+                self.assertFalse((frame_root / "000005").exists())
+                self.assertFalse((frame_root.parent / "imgs" / "000005").exists())
+                self.assertFalse(
+                    (frame_root.parent / ".pioneer_bundle_commits" / "000005.json").exists()
+                )
+                self.assertEqual(camera.n_frames_captured, 5)
+                self.assertIs(camera.last_observation_bundle, sentinel)
 
     def test_pixel_intrinsics_and_opencv_extrinsics_match_pytorch3d_rays(self):
         image_size = 5
