@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Register one live PIONEER run without inventing missing evidence.
 
-The v1.0 registry predates PAN-10.  This helper adds or replaces exactly one
+The v1.0 registry predates PAN-10/PAN-11.  This helper adds or replaces exactly one
 record, hashes the artifact bytes that are still present, and maintains a
 separate generated Markdown section for live PIONEER runs.  A requested PASS
 is accepted only when the wrapper exit status, online metrics, planner, and
@@ -22,6 +22,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 LIVE_START = "<!-- PIONEER_LIVE_SECTION_START -->"
 LIVE_END = "<!-- PIONEER_LIVE_SECTION_END -->"
+SUPPORTED_ISSUES = ("PAN-10", "PAN-11")
 PASS_STATUSES = {"PASS", "SUCCESS", "COMPLETED"}
 FAIL_STATUSES = {"FAIL", "FAILED", "RUNTIME_FAIL", "SCIENTIFIC_FAIL"}
 
@@ -252,6 +253,7 @@ def _artifact_paths(
 
 def _artifact_set(
     *,
+    issue: str,
     experiment_id: str,
     run_dir: Path,
     online_metrics: Path,
@@ -298,7 +300,7 @@ def _artifact_set(
         except OSError:
             continue
     return artifact_id, {
-        "issue": "PAN-10",
+        "issue": issue,
         "experiment_id": experiment_id,
         "hash_semantics": "SHA256 of the live artifact file bytes",
         "artifacts": artifacts,
@@ -366,6 +368,7 @@ def _full_commit(value: Optional[str]) -> Optional[str]:
 
 def build_record(
     *,
+    issue: str,
     experiment_id: str,
     run_dir: Path,
     online_metrics_path: Path,
@@ -503,6 +506,141 @@ def build_record(
     depth_source = str(depth_source_value) if depth_source_value is not None else None
     start_index = _as_int(_pick(sources, ("start_index",), ("start",)))
 
+    planner_state_mode_value = _pick(
+        sources,
+        ("run", "pioneer_planner_state_mode"),
+        ("planner_search", "state_mode"),
+        ("pioneer_planner_state_mode",),
+    )
+    planner_state_mode = (
+        str(planner_state_mode_value)
+        if planner_state_mode_value is not None
+        else None
+    )
+    planner_state_dimension = _as_int(
+        _pick(
+            sources,
+            ("run", "planner_state_dimension"),
+            ("planner_search", "state_dimension"),
+            ("planner_state_dimension",),
+        )
+    )
+    cubemap_rig_frame_value = _pick(
+        sources,
+        ("run", "pioneer_cubemap_rig_frame"),
+        ("planner_search", "cubemap_rig_frame"),
+        ("pioneer_cubemap_rig_frame",),
+    )
+    cubemap_rig_frame = (
+        str(cubemap_rig_frame_value)
+        if cubemap_rig_frame_value is not None
+        else None
+    )
+    cubemap_extrinsics_version_value = _pick(
+        sources,
+        ("run", "pioneer_cubemap_extrinsics_version"),
+        ("planner_search", "cubemap_extrinsics_version"),
+        ("pioneer_cubemap_extrinsics_version",),
+    )
+    cubemap_extrinsics_version = (
+        str(cubemap_extrinsics_version_value)
+        if cubemap_extrinsics_version_value is not None
+        else None
+    )
+    canonical_orientation_indices = _pick(
+        sources,
+        ("run", "pioneer_canonical_orientation_indices"),
+        ("planner_search", "canonical_orientation_indices"),
+        ("pioneer_canonical_orientation_indices",),
+    )
+    planner_search = (
+        metrics.get("planner_search")
+        if isinstance(metrics.get("planner_search"), Mapping)
+        else {}
+    )
+    planner_search_totals_value = planner_search.get("totals")
+    planner_search_totals = (
+        dict(planner_search_totals_value)
+        if isinstance(planner_search_totals_value, Mapping)
+        else {}
+    )
+    expected_state_dimension = {
+        "legacy_pose5d": 5,
+        "position_only": 3,
+    }.get(planner_state_mode)
+    expected_rig_frame = {
+        "legacy_pose5d": "body",
+        "position_only": "world",
+    }.get(planner_state_mode)
+    expected_extrinsics_version = {
+        "legacy_pose5d": "pytorch3d-body-aligned-v1",
+        "position_only": "pytorch3d-world-axes-v1",
+    }.get(planner_state_mode)
+    orientation_proposals = _as_int(
+        planner_search_totals.get("orientation_action_proposal_count")
+    )
+    rendered_candidates = _as_int(
+        planner_search_totals.get("rendered_candidate_count")
+    )
+    imagined_candidate_bundles = _as_int(
+        pioneer.get("imagined_candidate_bundle_render_count")
+    )
+    required_search_count_fields = (
+        "parent_beam_count",
+        "raw_action_proposal_count",
+        "translation_action_proposal_count",
+        "orientation_action_proposal_count",
+        "generated_candidate_count",
+        "valid_state_candidate_count",
+        "observed_rejected_candidate_count",
+        "collision_rejected_candidate_count",
+        "rendered_candidate_count",
+        "retained_beam_count",
+    )
+    search_counts_verified = all(
+        type(planner_search_totals.get(field)) is int
+        and planner_search_totals[field] >= 0
+        for field in required_search_count_fields
+    )
+    search_seconds = planner_search_totals.get("search_seconds")
+    search_seconds_verified = (
+        not isinstance(search_seconds, bool)
+        and isinstance(search_seconds, (int, float))
+        and search_seconds >= 0
+    )
+    pan11_contract_verified = bool(
+        issue == "PAN-11"
+        and expected_state_dimension is not None
+        and planner_state_dimension == expected_state_dimension
+        and cubemap_rig_frame == expected_rig_frame
+        and cubemap_extrinsics_version == expected_extrinsics_version
+        and (
+            canonical_orientation_indices == [2, 0]
+            if planner_state_mode == "position_only"
+            else True
+        )
+        and planner_search.get("state_mode") == planner_state_mode
+        and _as_int(planner_search.get("state_dimension"))
+        == planner_state_dimension
+        and planner_search.get("cubemap_rig_frame") == cubemap_rig_frame
+        and planner_search.get("cubemap_extrinsics_version")
+        == cubemap_extrinsics_version
+        and search_counts_verified
+        and search_seconds_verified
+        and rendered_candidates is not None
+        and imagined_candidate_bundles is not None
+        and rendered_candidates == imagined_candidate_bundles
+        and (
+            orientation_proposals == 0
+            if planner_state_mode == "position_only"
+            else orientation_proposals is not None and orientation_proposals > 0
+        )
+    )
+    if issue == "PAN-11" and effective_status == "PASS" and not pan11_contract_verified:
+        effective_status = "UNKNOWN"
+        completion_verified = False
+        status_reason = "PAN-11 planner-state/search telemetry contract is incomplete."
+
     normalized_config = {
         "scene": scene,
         "planner": planner,
@@ -523,6 +661,16 @@ def build_record(
         "debug_profile": debug_profile,
         "coverage_comparable": coverage_comparable,
     }
+    if issue == "PAN-11":
+        normalized_config.update(
+            {
+                "pioneer_planner_state_mode": planner_state_mode,
+                "planner_state_dimension": planner_state_dimension,
+                "pioneer_cubemap_rig_frame": cubemap_rig_frame,
+                "pioneer_cubemap_extrinsics_version": cubemap_extrinsics_version,
+                "pioneer_canonical_orientation_indices": canonical_orientation_indices,
+            }
+        )
     normalized_hash = _canonical_sha256(normalized_config)
 
     artifact_count = len(artifact_set.get("artifacts", {}))
@@ -576,13 +724,16 @@ def build_record(
         if effective_status == "PASS"
         else f"No PASS claim: {status_reason}."
     )
+    notes = "Debug-only coverage is not comparable." if coverage_comparable is False else None
+    if issue == "PAN-11":
+        notes = "Issue provenance: PAN-11." + (f" {notes}" if notes else "")
     now = datetime.now(timezone.utc)
     return {
         "experiment_id": experiment_id,
         "date": now.date().isoformat(),
         "pr": None,
         "commit": _short_commit(scientific_run_commit),
-        "multica_issue": "PAN-10",
+        "multica_issue": issue,
         "category": "real_mesh_smoke",
         "scene": scene,
         "planner": planner,
@@ -604,6 +755,16 @@ def build_record(
             "pioneer_face_count": face_count,
             "pioneer_face_size": face_size,
             "pioneer_face_fov_degrees": face_fov,
+            **(
+                {
+                    "pioneer_planner_state_mode": planner_state_mode,
+                    "planner_state_dimension": planner_state_dimension,
+                    "pioneer_cubemap_rig_frame": cubemap_rig_frame,
+                    "pioneer_cubemap_extrinsics_version": cubemap_extrinsics_version,
+                }
+                if issue == "PAN-11"
+                else {}
+            ),
         },
         "baseline": None,
         "final_normalized_coverage": final_normalized_coverage,
@@ -620,8 +781,10 @@ def build_record(
             "requested_status": requested_status,
             "status_reason": status_reason,
         },
-        "comparability_group": None if coverage_comparable is not True else "PAN-10-PIONEER",
-        "notes": "Debug-only coverage is not comparable." if coverage_comparable is False else None,
+        "comparability_group": (
+            None if coverage_comparable is not True else f"{issue}-PIONEER"
+        ),
+        "notes": notes,
         "pioneer": {
             "observation_mode": observation_mode,
             "cubemap6": cubemap6,
@@ -634,6 +797,31 @@ def build_record(
             "beam_width": beam_width,
             "beam_steps": beam_steps,
             "proxy_points": proxy_points,
+            **(
+                {
+                    "pioneer_planner_state_mode": planner_state_mode,
+                    "planner_state_dimension": planner_state_dimension,
+                    "pioneer_cubemap_rig_frame": cubemap_rig_frame,
+                    "pioneer_cubemap_extrinsics_version": cubemap_extrinsics_version,
+                    "pioneer_canonical_orientation_indices": canonical_orientation_indices,
+                    "planner_search": {
+                        "state_mode": planner_search.get("state_mode"),
+                        "state_dimension": _as_int(
+                            planner_search.get("state_dimension")
+                        ),
+                        "cubemap_rig_frame": planner_search.get(
+                            "cubemap_rig_frame"
+                        ),
+                        "cubemap_extrinsics_version": planner_search.get(
+                            "cubemap_extrinsics_version"
+                        ),
+                        "totals": planner_search_totals,
+                    },
+                    "pan11_contract_verified": pan11_contract_verified,
+                }
+                if issue == "PAN-11"
+                else {}
+            ),
             "coverage": {
                 "final_normalized": final_normalized_coverage,
                 "final_raw": final_raw_coverage,
@@ -645,6 +833,7 @@ def build_record(
             "cubemap6_metrics_verified": cubemap6_metrics_verified,
         },
         "provenance": {
+            **({"issue": issue} if issue == "PAN-11" else {}),
             "scientific_run_commit": scientific_run_commit or None,
             "scientific_run_commit_full": scientific_full,
             "scientific_run_commit_resolution": "user_supplied_not_resolved",
@@ -690,7 +879,7 @@ def _live_section(registry: Mapping[str, Any]) -> str:
         for record in registry.get("experiments", [])
         if isinstance(record, Mapping)
         and (
-            record.get("multica_issue") == "PAN-10"
+            record.get("multica_issue") in SUPPORTED_ISSUES
             or str(record.get("planner") or "").lower() == "pioneer"
         )
     ]
@@ -737,7 +926,7 @@ def _update_markdown(markdown: str, registry: Mapping[str, Any]) -> str:
     live_count = sum(
         isinstance(record, Mapping)
         and (
-            record.get("multica_issue") == "PAN-10"
+            record.get("multica_issue") in SUPPORTED_ISSUES
             or str(record.get("planner") or "").lower() == "pioneer"
         )
         for record in registry.get("experiments", [])
@@ -797,8 +986,12 @@ def register_experiment(
     scientific_run_commit: str,
     final_branch_commit: str,
     status: str,
+    issue: str = "PAN-10",
     artifact_roots: Sequence[Path] = (),
 ) -> Mapping[str, Any]:
+    if issue not in SUPPORTED_ISSUES:
+        allowed = ", ".join(SUPPORTED_ISSUES)
+        raise ValueError(f"issue must be one of: {allowed}")
     registry = _read_json(registry_json)
     if registry is None:
         raise ValueError(f"Registry JSON is missing or invalid: {registry_json}")
@@ -821,6 +1014,7 @@ def register_experiment(
         except OSError:
             pass
     artifact_set_id, artifact_set = _artifact_set(
+        issue=issue,
         experiment_id=experiment_id,
         run_dir=run_dir,
         online_metrics=online_metrics,
@@ -830,6 +1024,7 @@ def register_experiment(
         registry_paths=excluded,
     )
     record = build_record(
+        issue=issue,
         experiment_id=experiment_id,
         run_dir=run_dir,
         online_metrics_path=online_metrics,
@@ -886,6 +1081,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--final-branch-commit", required=True)
     parser.add_argument("--status", required=True)
     parser.add_argument(
+        "--issue",
+        choices=SUPPORTED_ISSUES,
+        default="PAN-10",
+        help="Linear issue provenance (default: PAN-10 for legacy commands).",
+    )
+    parser.add_argument(
         "--artifact-root",
         action="append",
         default=[],
@@ -906,6 +1107,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         scientific_run_commit=args.scientific_run_commit,
         final_branch_commit=args.final_branch_commit,
         status=args.status,
+        issue=args.issue,
         artifact_roots=[path.resolve() for path in args.artifact_root],
     )
     print(

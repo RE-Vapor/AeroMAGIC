@@ -8,7 +8,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from register_pioneer_experiment import register_experiment  # noqa: E402
+from register_pioneer_experiment import _parser, register_experiment  # noqa: E402
 
 
 BASE_COMMIT = "1" * 40
@@ -169,6 +169,8 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
             }
             first = register_experiment(**kwargs)
             self.assertEqual(first["status"], "PASS")
+            self.assertEqual(first["multica_issue"], "PAN-10")
+            self.assertEqual(first["notes"], "Debug-only coverage is not comparable.")
             self.assertTrue(first["pioneer"]["cubemap6"])
             self.assertEqual(first["proxy_points"], 100000)
             self.assertEqual(first["pioneer"]["render_counts"]["imagined_face_render_count"], 60)
@@ -181,6 +183,12 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
             self.assertEqual(registry["category_counts"]["real_mesh_smoke"], 2)
             self.assertEqual(registry["status_counts"]["PASS"], 2)
             artifact_set = registry["artifact_sets"][first["artifacts"]]
+            self.assertEqual(artifact_set["issue"], "PAN-10")
+            self.assertNotIn("planner_search", first["pioneer"])
+            self.assertNotIn(
+                "pioneer_planner_state_mode",
+                first["provenance"]["normalized_config"],
+            )
             log_artifact = artifact_set["artifacts"]["run.log"]
             expected_hash = hashlib.sha256((run_dir / "run.log").read_bytes()).hexdigest()
             self.assertEqual(log_artifact["sha256"], expected_hash)
@@ -245,6 +253,165 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
                 "- Experiment records：**2**（1 historical v1.0 IDs + 1 live PIONEER IDs）",
                 markdown,
             )
+
+    def test_pan11_retains_issue_and_position_only_search_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            registry_json, registry_md, run_dir, online = self._fixture(temporary)
+            metrics = json.loads(online.read_text(encoding="utf-8"))
+            metrics["run"].update(
+                {
+                    "pioneer_planner_state_mode": "position_only",
+                    "planner_state_dimension": 3,
+                    "pioneer_cubemap_rig_frame": "world",
+                    "pioneer_cubemap_extrinsics_version": (
+                        "pytorch3d-world-axes-v1"
+                    ),
+                    "pioneer_canonical_orientation_indices": [2, 0],
+                }
+            )
+            expected_totals = {
+                "parent_beam_count": 4,
+                "raw_action_proposal_count": 24,
+                "translation_action_proposal_count": 24,
+                "orientation_action_proposal_count": 0,
+                "generated_candidate_count": 20,
+                "valid_state_candidate_count": 18,
+                "observed_rejected_candidate_count": 2,
+                "collision_rejected_candidate_count": 3,
+                "rendered_candidate_count": 9,
+                "retained_beam_count": 6,
+                "search_seconds": 0.75,
+            }
+            metrics["planner_search"] = {
+                "schema_version": 1,
+                "state_mode": "position_only",
+                "state_dimension": 3,
+                "cubemap_rig_frame": "world",
+                "cubemap_extrinsics_version": "pytorch3d-world-axes-v1",
+                "totals": expected_totals,
+            }
+            _write_json(online, metrics)
+
+            record = register_experiment(
+                registry_json=registry_json,
+                registry_md=registry_md,
+                run_dir=run_dir,
+                online_metrics=online,
+                experiment_id="PAN-11-PIONEER-EIFFEL-POSITION-ONLY",
+                scientific_run_commit=BASE_COMMIT,
+                final_branch_commit=FINAL_COMMIT,
+                status="PASS",
+                issue="PAN-11",
+            )
+
+            self.assertEqual(record["status"], "PASS")
+            self.assertEqual(record["multica_issue"], "PAN-11")
+            self.assertEqual(
+                record["notes"],
+                "Issue provenance: PAN-11. Debug-only coverage is not comparable.",
+            )
+            self.assertEqual(record["provenance"]["issue"], "PAN-11")
+            self.assertEqual(
+                record["pioneer"]["pioneer_planner_state_mode"], "position_only"
+            )
+            self.assertEqual(record["pioneer"]["planner_state_dimension"], 3)
+            self.assertEqual(
+                record["pioneer"]["pioneer_cubemap_rig_frame"], "world"
+            )
+            self.assertEqual(
+                record["pioneer"]["pioneer_cubemap_extrinsics_version"],
+                "pytorch3d-world-axes-v1",
+            )
+            self.assertEqual(
+                record["pioneer"]["pioneer_canonical_orientation_indices"],
+                [2, 0],
+            )
+            self.assertTrue(record["pioneer"]["pan11_contract_verified"])
+            self.assertEqual(
+                record["pioneer"]["planner_search"]["totals"], expected_totals
+            )
+            self.assertEqual(
+                record["pioneer"]["planner_search"]["state_mode"],
+                "position_only",
+            )
+            self.assertEqual(
+                record["provenance"]["normalized_config"][
+                    "pioneer_planner_state_mode"
+                ],
+                "position_only",
+            )
+            registry = json.loads(registry_json.read_text(encoding="utf-8"))
+            artifact_set = registry["artifact_sets"][record["artifacts"]]
+            self.assertEqual(artifact_set["issue"], "PAN-11")
+            self.assertIn(
+                "| PAN-11-PIONEER-EIFFEL-POSITION-ONLY |",
+                registry_md.read_text(encoding="utf-8"),
+            )
+
+            metrics["run"]["pioneer_cubemap_extrinsics_version"] = "arbitrary-v1"
+            metrics["planner_search"]["cubemap_extrinsics_version"] = "arbitrary-v1"
+            _write_json(online, metrics)
+            invalid_version = register_experiment(
+                registry_json=registry_json,
+                registry_md=registry_md,
+                run_dir=run_dir,
+                online_metrics=online,
+                experiment_id="PAN-11-PIONEER-EIFFEL-INVALID-VERSION",
+                scientific_run_commit=BASE_COMMIT,
+                final_branch_commit=FINAL_COMMIT,
+                status="PASS",
+                issue="PAN-11",
+            )
+            self.assertEqual(invalid_version["status"], "UNKNOWN")
+            self.assertFalse(
+                invalid_version["pioneer"]["pan11_contract_verified"]
+            )
+
+            metrics["run"]["pioneer_cubemap_extrinsics_version"] = (
+                "pytorch3d-world-axes-v1"
+            )
+            metrics["planner_search"]["cubemap_extrinsics_version"] = (
+                "pytorch3d-world-axes-v1"
+            )
+            del metrics["planner_search"]["totals"]["rendered_candidate_count"]
+            _write_json(online, metrics)
+            missing_counter = register_experiment(
+                registry_json=registry_json,
+                registry_md=registry_md,
+                run_dir=run_dir,
+                online_metrics=online,
+                experiment_id="PAN-11-PIONEER-EIFFEL-MISSING-COUNTER",
+                scientific_run_commit=BASE_COMMIT,
+                final_branch_commit=FINAL_COMMIT,
+                status="PASS",
+                issue="PAN-11",
+            )
+            self.assertEqual(missing_counter["status"], "UNKNOWN")
+
+    def test_cli_issue_defaults_to_pan10_and_accepts_pan11(self):
+        required = [
+            "--registry-json",
+            "registry.json",
+            "--registry-md",
+            "registry.md",
+            "--run-dir",
+            "run",
+            "--online-metrics",
+            "metrics.json",
+            "--experiment-id",
+            "experiment",
+            "--scientific-run-commit",
+            BASE_COMMIT,
+            "--final-branch-commit",
+            FINAL_COMMIT,
+            "--status",
+            "PASS",
+        ]
+        self.assertEqual(_parser().parse_args(required).issue, "PAN-10")
+        self.assertEqual(
+            _parser().parse_args([*required, "--issue", "PAN-11"]).issue,
+            "PAN-11",
+        )
 
     def test_requested_pass_is_withheld_when_evidence_is_missing(self):
         with tempfile.TemporaryDirectory() as temporary:
