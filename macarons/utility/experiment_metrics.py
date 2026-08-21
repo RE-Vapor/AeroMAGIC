@@ -820,6 +820,9 @@ def create_trajectory_metrics_recorder(
         "validation_position_policy": _config_value(
             config, "validation_position_policy", None
         ),
+        "validation_initial_ue_manifest": _config_value(
+            config, "validation_initial_ue_manifest", None
+        ),
         "da3_model_id": _config_value(config, "da3_model_id", None),
         "da3_model_revision": _config_value(config, "da3_model_revision", None),
         "da3_model_config_sha256": _config_value(

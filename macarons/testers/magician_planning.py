@@ -3,6 +3,7 @@ import sys
 import gc
 import shutil
 import time
+from pathlib import Path
 from ..utility.macarons_utils import *
 from ..utility.utils import count_parameters
 from ..utility.gaussian_utils import CamerasWrapper, convert_camera_from_pytorch3d_to_gs
@@ -52,6 +53,8 @@ from ..utility.position_only_planning import (
     position_only_structure_audit,
     xyz_to_canonical_pose_index,
 )
+from ..utility.ue5_observation_contract import load_bundle as load_ue5_bundle
+from ..utility.ue5_pan10_adapter import canonical_bundle_to_pan10
 import trimesh
 import lmdb
 
@@ -542,7 +545,8 @@ def setup_test_camera(params,
                       mirrored_axis=None,
                       rgb_provider=None,
                       depth_provider=None,
-                      require_complete_occupied_pose=False):
+                      require_complete_occupied_pose=False,
+                      initial_observation_bundle=None):
     """
     Setup the camera used for prediction.
 
@@ -606,15 +610,36 @@ def setup_test_camera(params,
             0, 3, dtype=torch.long, device=camera.device
         )
         camera.initialize_camera(start_cam_idx=canonical_start_idx)
-        planner_state.capture_and_commit(
-            start_state_idx,
-            _capture_planner_observation,
-            camera,
-            mesh,
-            rgb_provider,
-            params,
-            depth_provider,
-        )
+        if initial_observation_bundle is None:
+            planner_state.capture_and_commit(
+                start_state_idx,
+                _capture_planner_observation,
+                camera,
+                mesh,
+                rgb_provider,
+                params,
+                depth_provider,
+            )
+        else:
+            camera_center = camera.X_cam.reshape(1, 3)
+            if not torch.allclose(
+                camera_center,
+                initial_observation_bundle.center.to(device),
+                rtol=1e-5,
+                atol=1e-4,
+            ):
+                raise ValueError(
+                    "initial UE5 observation centre does not match Planner start"
+                )
+            planner_state.commit_full_sphere_capture(
+                start_state_idx, initial_observation_bundle
+            )
+            camera.last_observation_bundle = initial_observation_bundle
+            camera.n_frames_captured += 1
+            print(
+                "PIONEER initial observation provider: UE5 canonical file manifest "
+                f"request_id={initial_observation_bundle.metadata.get('request_id')}"
+            )
         camera.pioneer_state_index_history = torch.vstack(
             (camera.pioneer_state_index_history, start_state_idx.reshape(1, 3))
         )
@@ -1580,6 +1605,7 @@ def run_magician_test(params_name,
         ("pioneer_canonical_orientation_indices", None),
         ("pioneer_filter_occupied_position_candidates", False),
         ("validation_position_policy", None),
+        ("validation_initial_ue_manifest", None),
     ):
         setattr(params, name, getattr(test_params, name, default))
     if type(params.pioneer_filter_occupied_position_candidates) is not bool:
@@ -1766,6 +1792,25 @@ def run_magician_test(params_name,
                     "Using debug-only validation start override: "
                     f"{list(start_override)}"
                 )
+            initial_observation_bundle = None
+            initial_ue_manifest = getattr(
+                test_params, "validation_initial_ue_manifest", None
+            )
+            if initial_ue_manifest is not None:
+                scene_units = getattr(test_params, "da3_scene_units_per_meter", {})
+                if not isinstance(scene_units, dict) or scene_name not in scene_units:
+                    raise ValueError(
+                        "validation_initial_ue_manifest requires "
+                        "da3_scene_units_per_meter for the selected scene"
+                    )
+                initial_observation_bundle = canonical_bundle_to_pan10(
+                    load_ue5_bundle(Path(initial_ue_manifest)),
+                    device=device,
+                    scene_units_per_meter=float(scene_units[scene_name]),
+                    bundle_id=0,
+                    znear=float(params.znear),
+                    zfar=float(params.zfar),
+                )
             start_position_count = len(start_positions)
             if max_start_positions is not None:
                 start_position_count = min(start_position_count, max_start_positions)
@@ -1811,6 +1856,7 @@ def run_magician_test(params_name,
                                            mirrored_scene=mirrored_scene, mirrored_axis=mirrored_axis,
                                            rgb_provider=rgb_provider,
                                            depth_provider=depth_provider,
+                                           initial_observation_bundle=initial_observation_bundle,
                                            require_complete_occupied_pose=(
                                                require_complete_occupied_pose
                                            ))

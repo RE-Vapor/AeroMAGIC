@@ -135,7 +135,22 @@ def create_transient_rig(actor_subsystem, location, config):
 
 def resolve_rig(actor_subsystem, actors, request, config):
     position_actor_label = request.get("position_actor_label")
+    position_ue_cm = request.get("position_ue_cm")
     actor_by_label = {actor.get_actor_label(): actor for actor in actors}
+    if position_actor_label and position_ue_cm is not None:
+        raise RuntimeError("capture request cannot select actor and explicit position")
+    if position_ue_cm is not None:
+        if (
+            not isinstance(position_ue_cm, list)
+            or len(position_ue_cm) != 3
+            or not all(math.isfinite(float(value)) for value in position_ue_cm)
+        ):
+            raise RuntimeError("position_ue_cm must contain three finite values")
+        return create_transient_rig(
+            actor_subsystem,
+            unreal.Vector(*[float(value) for value in position_ue_cm]),
+            config,
+        )
     if position_actor_label:
         position_actor = actor_by_label.get(position_actor_label)
         if position_actor is None:
@@ -431,6 +446,7 @@ def main():
             "capture_timestamp_ns": timestamp_ns,
             "level_path": request["level_path"],
             "position_actor_label": request.get("position_actor_label"),
+            "requested_position_ue_cm": request.get("position_ue_cm"),
             "rig_source": rig_source,
             "shared_optical_center_ue_cm": positions[0],
             "world_to_meters": world_to_meters,

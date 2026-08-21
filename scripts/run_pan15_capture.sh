@@ -3,6 +3,7 @@ set -uo pipefail
 
 scenario="${1:?usage: run_pan15_capture.sh analytic|hkust OUTPUT_DIR}"
 output_dir="${2:?usage: run_pan15_capture.sh analytic|hkust OUTPUT_DIR}"
+shift 2
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 capture_script="$repository_root/unreal/PAN23/Scripts/capture_six_face_rgbd.py"
 capture_config="$repository_root/unreal/PAN23/Config/pan23_capture.json"
@@ -26,6 +27,20 @@ case "$scenario" in
     ;;
 esac
 
+position_ue_cm=()
+if [[ $# -gt 0 ]]; then
+  if [[ "${1:-}" != "--position-ue-cm" || $# -ne 4 ]]; then
+    printf 'optional arguments must be --position-ue-cm X Y Z\n' >&2
+    exit 2
+  fi
+  if [[ "$scenario" != "hkust" ]]; then
+    printf 'explicit UE positions are only supported for hkust\n' >&2
+    exit 2
+  fi
+  position_actor_label=
+  position_ue_cm=("$2" "$3" "$4")
+fi
+
 if [[ -e "$output_dir" ]]; then
   printf 'refusing to overwrite %s\n' "$output_dir" >&2
   exit 3
@@ -47,6 +62,9 @@ request_args=(
 )
 if [[ -n "$position_actor_label" ]]; then
   request_args+=(--position-actor-label "$position_actor_label")
+fi
+if (( ${#position_ue_cm[@]} == 3 )); then
+  request_args+=(--position-ue-cm "${position_ue_cm[@]}")
 fi
 python3 "$repository_root/scripts/make_pan15_request.py" "${request_args[@]}"
 
@@ -112,6 +130,9 @@ fi
   printf 'project_sha256=%s\n' "$project_hash_after"
   printf 'config_sha256=%s\n' "$config_hash_after"
   printf 'repository_commit=%s\n' "$PAN15_PROJECT_COMMIT"
+  if (( ${#position_ue_cm[@]} == 3 )); then
+    printf 'requested_position_ue_cm=%s,%s,%s\n' "${position_ue_cm[@]}"
+  fi
 } >"$temporary/provenance.txt"
 mv "$temporary" "$output_dir"
 printf 'PAN15_CAPTURE result=PASS scenario=%s output=%s\n' "$scenario" "$output_dir"

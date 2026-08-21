@@ -29,7 +29,19 @@ class PAN15CaptureWorkflowTests(unittest.TestCase):
         self.assertIn("analytic)", source)
         self.assertIn("hkust)", source)
         self.assertIn("PAN13_Legal_Start_Camera", source)
+        self.assertIn("--position-ue-cm", source)
         self.assertIn("adapt_pan15_ue_capture.py", source)
+
+    def test_explicit_position_request_is_a_transient_rig_source(self):
+        request_source = (ROOT / "scripts" / "make_pan15_request.py").read_text(
+            encoding="utf-8"
+        )
+        ue_source = (
+            ROOT / "unreal" / "PAN23" / "Scripts" / "capture_six_face_rgbd.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('parser.add_argument("--position-ue-cm"', request_source)
+        self.assertIn('request.get("position_ue_cm")', ue_source)
+        self.assertIn("unreal.Vector", ue_source)
 
 
 if __name__ == "__main__":

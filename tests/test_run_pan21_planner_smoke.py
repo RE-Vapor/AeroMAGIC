@@ -19,6 +19,8 @@ class Pan21PlannerRunnerTests(unittest.TestCase):
         self.assertIn("isolated_results_root", text)
         self.assertIn("spatial policy hash does not match debug profile", text)
         self.assertIn("validation_position_index_bounds", text)
+        self.assertIn("PIONEER_INITIAL_UE_MANIFEST", text)
+        self.assertIn("initial_observation_provider", text)
         self.assertNotIn("PAN-24", text)
 
 

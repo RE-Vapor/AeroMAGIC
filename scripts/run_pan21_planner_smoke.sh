@@ -42,6 +42,7 @@ gpu="$2"
 run_dir="$3"
 base_config_name="${4:-$DEFAULT_BASE_CONFIG}"
 python_bin="${PIONEER_PYTHON:-$DEFAULT_PYTHON}"
+initial_ue_manifest="${PIONEER_INITIAL_UE_MANIFEST:-}"
 repo_root="$(git rev-parse --show-toplevel)"
 
 if [[ ! "$session" =~ ^[A-Za-z0-9._-]+$ ]]; then
@@ -79,6 +80,10 @@ for required in "$base_config" "$profile_path" "$macarons_params" "$spatial_poli
     exit 2
   fi
 done
+if [[ -n "$initial_ue_manifest" && ! -f "$initial_ue_manifest" ]]; then
+  printf 'initial UE manifest does not exist: %s\n' "$initial_ue_manifest" >&2
+  exit 2
+fi
 
 mkdir -p "$run_dir"
 run_dir="$(cd "$run_dir" && pwd)"
@@ -99,12 +104,13 @@ cp -p -- "$macarons_params" "$run_dir/macarons_params.json"
 cp -p -- "$base_config" "$run_dir/base_config.json"
 cp -p -- "$spatial_policy" "$run_dir/hkust_spatial_policy.json"
 
-"$python_bin" - "$run_dir/base_config.json" "$run_dir/config.json" "$run_dir" <<'PY'
+"$python_bin" - "$run_dir/base_config.json" "$run_dir/config.json" "$run_dir" "$initial_ue_manifest" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 source, output, run_dir = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+initial_ue_manifest = sys.argv[4]
 config = json.loads(source.read_text(encoding="utf-8"))
 config.pop("debug_profile", None)
 config["dataset_path"] = str(run_dir / "data" / "Macarons++")
@@ -113,6 +119,8 @@ config["experiment_run_dir"] = str(run_dir)
 config["experiment_metrics_dir"] = str(run_dir / "metrics")
 config["debug_only"] = True
 config["coverage_comparable"] = False
+if initial_ue_manifest:
+    config["validation_initial_ue_manifest"] = str(Path(initial_ue_manifest).resolve())
 output.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 
@@ -134,6 +142,10 @@ if [[ "$spatial_policy_sha" != "$expected_spatial_policy_sha" ]]; then
   printf 'spatial policy hash does not match debug profile\n' >&2
   exit 2
 fi
+initial_ue_manifest_sha=none
+if [[ -n "$initial_ue_manifest" ]]; then
+  initial_ue_manifest_sha="$(sha256sum "$initial_ue_manifest" | awk '{print $1}')"
+fi
 
 {
   printf 'schema_version=pan21.planner-run.v1\n'
@@ -147,9 +159,15 @@ fi
   printf 'settings_sha256=%s\n' "$settings_sha"
   printf 'occupied_pose_sha256=%s\n' "$occupied_sha"
   printf 'planner_weight_sha256=%s\n' "$weight_sha"
-  printf 'spatial_policy_sha256=%s\n' "$spatial_policy_sha"
   printf 'planner_to_ue_cm=%s\n' '[planner_x*500,planner_z*500,planner_y*500]'
   printf 'validation_position_index_bounds=%s\n' '[0,3,0]..[11,3,9]'
+  if [[ -n "$initial_ue_manifest" ]]; then
+    printf 'initial_observation_provider=UE5\n'
+  else
+    printf 'initial_observation_provider=original\n'
+  fi
+  printf 'initial_ue_manifest=%s\n' "${initial_ue_manifest:-none}"
+  printf 'initial_ue_manifest_sha256=%s\n' "$initial_ue_manifest_sha"
   printf 'expected_observations=2\n'
   printf 'expected_real_face_renders=12\n'
   printf 'validation_start_position_override=5,3,1,2,0\n'
