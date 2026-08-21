@@ -22,6 +22,7 @@ class DebugProfileTests(unittest.TestCase):
             "large-scene": (200000, 3, 3, 21),
             "pioneer-20": (100000, 3, 3, 20),
             "pioneer-50": (100000, 3, 3, 50),
+            "pan21-two-observation": (100000, 3, 3, 2),
         }
         for name in DEBUG_PROFILE_NAMES:
             with self.subTest(profile=name):
@@ -42,6 +43,11 @@ class DebugProfileTests(unittest.TestCase):
                 self.assertEqual(overrides["validation_max_start_positions"], 1)
                 self.assertEqual(overrides["random_seed"], 8)
                 self.assertEqual(overrides["torch_seed"], 9)
+                if name == "pan21-two-observation":
+                    self.assertEqual(
+                        profile["validation_start_position_override"],
+                        [5, 3, 1, 2, 0],
+                    )
 
     def test_apply_preserves_base_scene_and_isolates_outputs(self):
         config = SimpleNamespace(
@@ -97,6 +103,21 @@ class DebugProfileTests(unittest.TestCase):
         for name in DEBUG_PROFILE_NAMES:
             with (PROFILES_DIR / f"{name}.json").open(encoding="utf-8") as stream:
                 self.assertIsInstance(json.load(stream), dict)
+
+    def test_apply_pan21_start_override_is_explicit_and_isolated(self):
+        config = {
+            "lmdb_dir_name": "base",
+            "scone_lmdb_dir_name": "base_scone",
+            "validation_memory_dir_name": "base_memory",
+            "results_json_name": "base.json",
+        }
+        apply_debug_profile(
+            config,
+            cli_profile_name="pan21-two-observation",
+            profiles_dir=str(PROFILES_DIR),
+        )
+        self.assertEqual(config["validation_start_position_override"], [5, 3, 1, 2, 0])
+        self.assertEqual(config["experiment_budget_observations"], 2)
 
     def test_pioneer_50_config_resolves_exact_budget_and_isolated_outputs(self):
         config_path = (

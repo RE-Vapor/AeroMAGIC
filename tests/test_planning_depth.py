@@ -15,11 +15,25 @@ from macarons.utility.planning_depth import (
     set_planning_seeds,
     update_proxy_state,
     validation_requires_complete_occupied_pose,
+    validation_start_position_override,
     validation_uses_occupied_pose,
 )
 
 
 class PlanningValidationLimitTests(unittest.TestCase):
+    def test_validation_start_position_override(self):
+        self.assertIsNone(validation_start_position_override({}))
+        self.assertEqual(
+            validation_start_position_override(
+                {"validation_start_position_override": [5, 3, 1, 2, 0]}
+            ),
+            (5, 3, 1, 2, 0),
+        )
+        with self.assertRaisesRegex(ValueError, "five non-negative integers"):
+            validation_start_position_override(
+                {"validation_start_position_override": [5, 3, 1]}
+            )
+
     def test_applies_short_run_limits_without_touching_other_params(self):
         params = SimpleNamespace(
             n_interpolation_steps=4,

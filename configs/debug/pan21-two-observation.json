@@ -1,0 +1,19 @@
+{
+  "name": "pan21-two-observation",
+  "description": "PAN-21 debug-only two-observation Planner smoke from one UE5-legal HKUST lattice start.",
+  "debug_only": true,
+  "coverage_comparable": false,
+  "output_suffix": "debug_pan21_two_observation",
+  "validation_start_position_override": [5, 3, 1, 2, 0],
+  "overrides": {
+    "validation_n_proxy_points": 100000,
+    "beam_width": 3,
+    "beam_steps": 3,
+    "validation_n_interpolation_steps": 1,
+    "validation_n_poses_in_trajectory": 1,
+    "experiment_budget_observations": 2,
+    "validation_max_start_positions": 1,
+    "random_seed": 8,
+    "torch_seed": 9
+  }
+}

@@ -17,6 +17,7 @@ DEBUG_PROFILE_NAMES = (
     "large-scene",
     "pioneer-20",
     "pioneer-50",
+    "pan21-two-observation",
 )
 
 _PROFILE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -40,6 +41,7 @@ _PROFILE_KEYS = {
     "output_suffix",
     "overrides",
 }
+_OPTIONAL_PROFILE_KEYS = {"validation_start_position_override"}
 
 
 def _config_value(config: Any, name: str, default: Any) -> Any:
@@ -86,7 +88,9 @@ def load_debug_profile(profile_name: str, profiles_dir: str) -> Mapping[str, Any
     if not isinstance(profile, dict):
         raise ValueError(f"Debug profile {path} must contain a JSON object.")
 
-    unknown_profile_keys = sorted(set(profile) - _PROFILE_KEYS)
+    unknown_profile_keys = sorted(
+        set(profile) - _PROFILE_KEYS - _OPTIONAL_PROFILE_KEYS
+    )
     missing_profile_keys = sorted(_PROFILE_KEYS - set(profile))
     if unknown_profile_keys or missing_profile_keys:
         details = []
@@ -130,6 +134,17 @@ def load_debug_profile(profile_name: str, profiles_dir: str) -> Mapping[str, Any
         value = overrides[key]
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValueError(f"Debug profile {path} {key} must be an integer >= {minimum}.")
+
+    start_override = profile.get("validation_start_position_override")
+    if start_override is not None and (
+        not isinstance(start_override, list)
+        or len(start_override) != 5
+        or any(type(value) is not int or value < 0 for value in start_override)
+    ):
+        raise ValueError(
+            f"Debug profile {path} validation_start_position_override must "
+            "contain five non-negative integers."
+        )
 
     expected_observations = (
         overrides["validation_n_poses_in_trajectory"]
@@ -175,6 +190,12 @@ def apply_debug_profile(
     profile = load_debug_profile(profile_name, profiles_dir)
     for key, value in profile["overrides"].items():
         _set_config_value(config, key, value)
+    if "validation_start_position_override" in profile:
+        _set_config_value(
+            config,
+            "validation_start_position_override",
+            list(profile["validation_start_position_override"]),
+        )
 
     suffix = profile["output_suffix"]
     _set_config_value(config, "debug_profile", profile_name)

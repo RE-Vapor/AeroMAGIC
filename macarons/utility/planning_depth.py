@@ -150,6 +150,28 @@ def apply_planning_validation_limits(params: Any, config: Any) -> Optional[int]:
     return max_start_positions
 
 
+def validation_start_position_override(config: Any) -> Optional[tuple[int, ...]]:
+    """Return one explicitly bounded debug start pose, if configured.
+
+    Formal scene starts remain immutable while a task-specific debug profile
+    can exercise one legal five-dimensional camera lattice entry.
+    """
+
+    value = _config_value(config, "validation_start_position_override", None)
+    if value is None:
+        return None
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 5
+        or any(type(index) is not int or index < 0 for index in value)
+    ):
+        raise ValueError(
+            "validation_start_position_override must contain five "
+            "non-negative integers."
+        )
+    return tuple(value)
+
+
 def validation_uses_occupied_pose(config: Any) -> bool:
     """Return the explicit dataset occupancy policy, defaulting to legacy use."""
 

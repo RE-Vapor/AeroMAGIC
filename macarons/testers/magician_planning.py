@@ -16,6 +16,7 @@ from ..utility.planning_depth import (
     scene_texture_atlas_size,
     set_planning_seeds,
     update_proxy_state,
+    validation_start_position_override,
     validation_requires_complete_occupied_pose,
     validation_uses_occupied_pose,
 )
@@ -1717,11 +1718,21 @@ def run_magician_test(params_name,
 
             torch.cuda.empty_cache()
 
-            start_position_count = len(settings.camera.start_positions)
+            start_positions = settings.camera.start_positions
+            start_override = validation_start_position_override(test_params)
+            if start_override is not None:
+                start_positions = [
+                    torch.tensor(start_override, dtype=torch.long, device=device)
+                ]
+                print(
+                    "Using debug-only validation start override: "
+                    f"{list(start_override)}"
+                )
+            start_position_count = len(start_positions)
             if max_start_positions is not None:
                 start_position_count = min(start_position_count, max_start_positions)
             for start_cam_idx_i in range(start_position_count):
-                start_cam_idx = settings.camera.start_positions[start_cam_idx_i]
+                start_cam_idx = start_positions[start_cam_idx_i]
                 print("\n" + "="*60)
                 print(f"Start cam index {start_cam_idx_i} for {scene_name}: {start_cam_idx}")
                 print("="*60)
