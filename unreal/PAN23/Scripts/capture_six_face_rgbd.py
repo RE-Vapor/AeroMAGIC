@@ -22,6 +22,7 @@ REQUEST_PATH = Path(os.environ["PAN15_REQUEST_PATH"]).resolve()
 PROJECT_COMMIT = os.environ["PAN15_PROJECT_COMMIT"]
 GPU_INDEX = int(os.environ["PAN15_GPU_INDEX"])
 FACE_NAMES = ("front", "back", "left", "right", "up", "down")
+PAN29_REPLAY_RIG_SCHEMA = "pan29.ue5-replay-rig.v1"
 
 
 def sha256(path):
@@ -48,7 +49,8 @@ def ue_rotator(pitch_yaw_roll):
 def contract_pose(capture, world_to_meters):
     """Map left-handed UE world to a right-handed world by flipping UE Y."""
 
-    transform_world_axis = lambda value: [value.x, -value.y, value.z]
+    def transform_world_axis(value):
+        return [value.x, -value.y, value.z]
     camera_right = transform_world_axis(
         unreal.MathLibrary.get_right_vector(capture.get_actor_rotation())
     )
@@ -70,6 +72,59 @@ def contract_pose(capture, world_to_meters):
         [camera_right[2], -camera_up[2], camera_forward[2], position_m[2]],
         [0.0, 0.0, 0.0, 1.0],
     ]
+
+
+def pioneer_pose(contract_transform, scene_units_per_meter):
+    """Represent the UE contract pose in the PIONEER XYZ world frame."""
+
+    # This is the same UE_CONTRACT_TO_MAGICIAN transform used by the PAN-21
+    # adapter: pioneer [x,y,z] = [contract_x,contract_z,-contract_y].
+    rows = contract_transform
+    rotation = [rows[0][:3], rows[2][:3], [-value for value in rows[1][:3]]]
+    translation = [
+        rows[0][3] * scene_units_per_meter,
+        rows[2][3] * scene_units_per_meter,
+        -rows[1][3] * scene_units_per_meter,
+    ]
+    return [
+        [*rotation[0], translation[0]],
+        [*rotation[1], translation[1]],
+        [*rotation[2], translation[2]],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
+
+def maximum_matrix_error(actual, expected):
+    return max(
+        abs(float(actual[row][column]) - float(expected[row][column]))
+        for row in range(len(expected))
+        for column in range(len(expected[row]))
+    )
+
+
+def validate_replay_source(request):
+    replay = request.get("replay_source")
+    if not isinstance(replay, dict):
+        raise RuntimeError("PAN-29 request must contain replay_source")
+    if replay.get("schema_version") != "pan29.replay-source.v1":
+        raise RuntimeError("unexpected PAN-29 replay_source schema")
+    if type(replay.get("observation_id")) is not int or replay["observation_id"] < 0:
+        raise RuntimeError("PAN-29 replay observation_id must be non-negative")
+    if replay.get("source_bundle_id") != replay["observation_id"]:
+        raise RuntimeError("PAN-29 source bundle and observation IDs differ")
+    if type(replay.get("source_capture_timestamp_ns")) is not int or replay[
+        "source_capture_timestamp_ns"
+    ] <= 0:
+        raise RuntimeError("PAN-29 replay source timestamp must be positive")
+    if replay.get("planner_input_unchanged") is not True:
+        raise RuntimeError("PAN-29 replay must not become Planner input")
+    if replay.get("ue5_role") != "post_run_visualization_only":
+        raise RuntimeError("PAN-29 UE5 role must be post-run visualization only")
+    if replay.get("requested_position_ue_cm") != request.get("position_ue_cm"):
+        raise RuntimeError("PAN-29 replay position differs from capture request")
+    if "ue5_actual_capture_timestamp_ns" in replay:
+        raise RuntimeError("actual UE5 capture time cannot be supplied by replay metadata")
+    return replay
 
 
 def write_float32(path, values):
@@ -189,6 +244,11 @@ def main():
             raise RuntimeError("runtime GPU does not match pinned capture config")
         if request["level_path"] != config.get("level_path") and request["scenario"] == "analytic":
             raise RuntimeError("analytic request level does not match capture config")
+        is_pan29_replay = config.get("schema_version") == PAN29_REPLAY_RIG_SCHEMA
+        if is_pan29_replay:
+            validate_replay_source(request)
+        if is_pan29_replay and request["level_path"] != config.get("level_path"):
+            raise RuntimeError("PAN-29 request level does not match replay config")
 
         level_subsystem = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
         actor_subsystem = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
@@ -215,7 +275,6 @@ def main():
             [0.0, focal, principal],
             [0.0, 0.0, 1.0],
         ]
-        timestamp_ns = time.time_ns()
         started = time.perf_counter()
         face_reports = []
         raw_root = temporary / "faces"
@@ -223,6 +282,9 @@ def main():
             unreal.AutomationLibrary.finish_loading_before_screenshot()
         except Exception as exc:
             unreal.log_warning(f"PAN15 finish_loading_before_screenshot: {exc}")
+        # This is the shared bundle epoch immediately before the first face
+        # capture.  It is deliberately distinct from PAN-29's source timestamp.
+        timestamp_ns = time.time_ns()
 
         for definition in config["faces"]:
             name = definition["face_name"]
@@ -232,6 +294,36 @@ def main():
                 for a, b in zip(vec(capture.get_actor_location()), root_location)
             ) > 1e-6:
                 raise RuntimeError(f"capture {name} does not share root location")
+            forward = vec(
+                unreal.MathLibrary.get_forward_vector(capture.get_actor_rotation())
+            )
+            expected_forward = definition.get("expected_forward_ue")
+            if expected_forward is not None and max(
+                abs(float(actual) - float(expected))
+                for actual, expected in zip(forward, expected_forward)
+            ) > 1e-5:
+                raise RuntimeError(f"capture {name} forward axis does not match config")
+            contract_transform = contract_pose(capture, world_to_meters)
+            pioneer_transform = (
+                pioneer_pose(
+                    contract_transform, float(config["scene_units_per_meter"])
+                )
+                if is_pan29_replay
+                else None
+            )
+            expected_rotation = definition.get(
+                "expected_T_pioneer_world_from_cam_rotation"
+            )
+            if is_pan29_replay:
+                if expected_rotation is None:
+                    raise RuntimeError(f"PAN-29 face {name} lacks an expected basis")
+                basis_error = maximum_matrix_error(
+                    [row[:3] for row in pioneer_transform[:3]], expected_rotation
+                )
+                if basis_error > 1e-5:
+                    raise RuntimeError(
+                        f"PAN-29 face {name} basis mismatch: max_error={basis_error}"
+                    )
             component = capture.get_component_by_class(unreal.SceneCaptureComponent2D)
             component.set_editor_property("fov_angle", config["fov_degrees"])
             component.set_editor_property("capture_every_frame", False)
@@ -398,11 +490,18 @@ def main():
                     "fov_degrees": float(config["fov_degrees"]),
                     "location_ue_cm": vec(capture.get_actor_location()),
                     "rotation_degrees": rot(capture.get_actor_rotation()),
-                    "forward_ue": vec(
-                        unreal.MathLibrary.get_forward_vector(capture.get_actor_rotation())
-                    ),
+                    "forward_ue": forward,
                     "K_pixel": K_pixel,
-                    "T_world_from_cam": contract_pose(capture, world_to_meters),
+                    "T_world_from_cam": contract_transform,
+                    "T_pioneer_world_from_cam": pioneer_transform,
+                    "pioneer_basis_max_abs_error": (
+                        maximum_matrix_error(
+                            [row[:3] for row in pioneer_transform[:3]],
+                            expected_rotation,
+                        )
+                        if pioneer_transform is not None and expected_rotation is not None
+                        else None
+                    ),
                     "rgb_uint8": {
                         **asset(rgb_raw, temporary),
                         "dtype": "uint8",
@@ -447,6 +546,7 @@ def main():
             "level_path": request["level_path"],
             "position_actor_label": request.get("position_actor_label"),
             "requested_position_ue_cm": request.get("position_ue_cm"),
+            "replay_source": request.get("replay_source"),
             "rig_source": rig_source,
             "shared_optical_center_ue_cm": positions[0],
             "world_to_meters": world_to_meters,

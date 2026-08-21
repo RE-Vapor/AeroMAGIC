@@ -171,6 +171,7 @@ def adapt_pan15_raw_manifest(manifest_path: Path) -> CanonicalObservationBundle:
             "source_depth_encoding": UE_SCENE_DEPTH_ENCODING,
             "canonical_depth_encoding": CANONICAL_DEPTH_ENCODING,
             "geometry_status": "validated_by_PAN-20",
+            "replay_source": raw.get("replay_source"),
         },
     )
     validate_bundle(bundle)
