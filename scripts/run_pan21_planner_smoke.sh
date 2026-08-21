@@ -29,6 +29,15 @@ if [[ "${1:-}" == "--inside-tmux" ]]; then
   printf 'finished_at_utc=%s\nexit_code=%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$return_code" \
     >> "$run_dir/status.txt"
+  results_link="$repo_root/results"
+  expected_results="$run_dir/results"
+  if [[ -L "$results_link" ]] && \
+     [[ "$(readlink -f "$results_link")" == "$(readlink -f "$expected_results")" ]]; then
+    rm -- "$results_link"
+    printf 'results_link_cleanup=removed\n' >> "$run_dir/status.txt"
+  else
+    printf 'results_link_cleanup=not-owned-or-missing\n' >> "$run_dir/status.txt"
+  fi
   exit "$return_code"
 fi
 

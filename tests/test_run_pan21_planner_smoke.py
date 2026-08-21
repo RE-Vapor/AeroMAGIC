@@ -21,6 +21,8 @@ class Pan21PlannerRunnerTests(unittest.TestCase):
         self.assertIn("validation_position_index_bounds", text)
         self.assertIn("PIONEER_INITIAL_UE_MANIFEST", text)
         self.assertIn("initial_observation_provider", text)
+        self.assertIn('readlink -f "$results_link"', text)
+        self.assertIn('rm -- "$results_link"', text)
         self.assertNotIn("PAN-24", text)
 
 
