@@ -41,7 +41,10 @@ _PROFILE_KEYS = {
     "output_suffix",
     "overrides",
 }
-_OPTIONAL_PROFILE_KEYS = {"validation_start_position_override"}
+_OPTIONAL_PROFILE_KEYS = {
+    "validation_position_policy",
+    "validation_start_position_override",
+}
 
 
 def _config_value(config: Any, name: str, default: Any) -> Any:
@@ -145,6 +148,49 @@ def load_debug_profile(profile_name: str, profiles_dir: str) -> Mapping[str, Any
             f"Debug profile {path} validation_start_position_override must "
             "contain five non-negative integers."
         )
+    position_policy = profile.get("validation_position_policy")
+    if position_policy is not None:
+        expected_keys = {
+            "planner_to_ue_cm",
+            "position_index_max",
+            "position_index_min",
+            "source_policy_sha256",
+        }
+        if not isinstance(position_policy, dict) or set(position_policy) != expected_keys:
+            raise ValueError(
+                f"Debug profile {path} validation_position_policy has invalid keys."
+            )
+        for key in ("position_index_min", "position_index_max"):
+            indices = position_policy[key]
+            if (
+                not isinstance(indices, list)
+                or len(indices) != 3
+                or any(type(value) is not int or value < 0 for value in indices)
+            ):
+                raise ValueError(
+                    f"Debug profile {path} validation_position_policy.{key} "
+                    "must contain three non-negative integers."
+                )
+        if any(
+            lower > upper
+            for lower, upper in zip(
+                position_policy["position_index_min"],
+                position_policy["position_index_max"],
+            )
+        ):
+            raise ValueError(
+                f"Debug profile {path} validation_position_policy bounds are inverted."
+            )
+        if not isinstance(position_policy["planner_to_ue_cm"], str):
+            raise ValueError(
+                f"Debug profile {path} validation_position_policy.planner_to_ue_cm "
+                "must be a string."
+            )
+        if not re.fullmatch(r"[0-9a-f]{64}", position_policy["source_policy_sha256"]):
+            raise ValueError(
+                f"Debug profile {path} validation_position_policy.source_policy_sha256 "
+                "must be a lowercase SHA-256."
+            )
 
     expected_observations = (
         overrides["validation_n_poses_in_trajectory"]
@@ -195,6 +241,12 @@ def apply_debug_profile(
             config,
             "validation_start_position_override",
             list(profile["validation_start_position_override"]),
+        )
+    if "validation_position_policy" in profile:
+        _set_config_value(
+            config,
+            "validation_position_policy",
+            dict(profile["validation_position_policy"]),
         )
 
     suffix = profile["output_suffix"]

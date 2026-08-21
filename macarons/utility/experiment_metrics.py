@@ -337,6 +337,7 @@ class TrajectoryMetricsRecorder:
             "valid_state_candidate_count",
             "observed_rejected_candidate_count",
             "occupied_rejected_candidate_count",
+            "validation_bound_rejected_candidate_count",
             "collision_rejected_candidate_count",
             "rendered_candidate_count",
             "retained_beam_count",
@@ -355,6 +356,7 @@ class TrajectoryMetricsRecorder:
             normalized["valid_state_candidate_count"]
             + normalized["observed_rejected_candidate_count"]
             + normalized["occupied_rejected_candidate_count"]
+            + normalized["validation_bound_rejected_candidate_count"]
         ):
             raise ValueError(
                 "generated candidates must equal valid, observed-rejected, and "
@@ -616,6 +618,7 @@ class TrajectoryMetricsRecorder:
                 "valid_state_candidate_count",
                 "observed_rejected_candidate_count",
                 "occupied_rejected_candidate_count",
+                "validation_bound_rejected_candidate_count",
                 "collision_rejected_candidate_count",
                 "rendered_candidate_count",
                 "retained_beam_count",
@@ -810,6 +813,12 @@ def create_trajectory_metrics_recorder(
         ),
         "validation_require_complete_occupied_pose": _config_value(
             config, "validation_require_complete_occupied_pose", False
+        ),
+        "validation_start_position_override": _config_value(
+            config, "validation_start_position_override", None
+        ),
+        "validation_position_policy": _config_value(
+            config, "validation_position_policy", None
         ),
         "da3_model_id": _config_value(config, "da3_model_id", None),
         "da3_model_revision": _config_value(config, "da3_model_revision", None),

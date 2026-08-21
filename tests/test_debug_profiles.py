@@ -48,6 +48,10 @@ class DebugProfileTests(unittest.TestCase):
                         profile["validation_start_position_override"],
                         [5, 3, 1, 2, 0],
                     )
+                    self.assertEqual(
+                        profile["validation_position_policy"]["position_index_min"],
+                        [0, 3, 0],
+                    )
 
     def test_apply_preserves_base_scene_and_isolates_outputs(self):
         config = SimpleNamespace(
@@ -118,6 +122,10 @@ class DebugProfileTests(unittest.TestCase):
         )
         self.assertEqual(config["validation_start_position_override"], [5, 3, 1, 2, 0])
         self.assertEqual(config["experiment_budget_observations"], 2)
+        self.assertEqual(
+            config["validation_position_policy"]["position_index_max"],
+            [11, 3, 9],
+        )
 
     def test_pioneer_50_config_resolves_exact_budget_and_isolated_outputs(self):
         config_path = (

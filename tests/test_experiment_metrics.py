@@ -301,7 +301,8 @@ class ExperimentMetricsTests(unittest.TestCase):
                 "generated_candidate_count": 18,
                 "valid_state_candidate_count": 12,
                 "observed_rejected_candidate_count": 3,
-                "occupied_rejected_candidate_count": 3,
+                "occupied_rejected_candidate_count": 1,
+                "validation_bound_rejected_candidate_count": 2,
                 "collision_rejected_candidate_count": 11,
                 "rendered_candidate_count": 1,
                 "retained_beam_count": 1,
@@ -335,7 +336,10 @@ class ExperimentMetricsTests(unittest.TestCase):
         self.assertEqual(search["totals"]["parent_beam_count"], 4)
         self.assertEqual(search["totals"]["raw_action_proposal_count"], 24)
         self.assertEqual(search["totals"]["orientation_action_proposal_count"], 0)
-        self.assertEqual(search["totals"]["occupied_rejected_candidate_count"], 3)
+        self.assertEqual(search["totals"]["occupied_rejected_candidate_count"], 1)
+        self.assertEqual(
+            search["totals"]["validation_bound_rejected_candidate_count"], 2
+        )
         self.assertEqual(search["totals"]["rendered_candidate_count"], 5)
         self.assertEqual(
             result["trajectory"]["planner_state_indices"], [[2, 9, 3]]

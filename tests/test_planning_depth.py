@@ -14,6 +14,7 @@ from macarons.utility.planning_depth import (
     scene_texture_atlas_size,
     set_planning_seeds,
     update_proxy_state,
+    validation_position_index_bounds,
     validation_requires_complete_occupied_pose,
     validation_start_position_override,
     validation_uses_occupied_pose,
@@ -32,6 +33,29 @@ class PlanningValidationLimitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "five non-negative integers"):
             validation_start_position_override(
                 {"validation_start_position_override": [5, 3, 1]}
+            )
+
+    def test_validation_position_index_bounds(self):
+        self.assertIsNone(validation_position_index_bounds({}))
+        self.assertEqual(
+            validation_position_index_bounds(
+                {
+                    "validation_position_policy": {
+                        "position_index_min": [0, 3, 0],
+                        "position_index_max": [11, 3, 9],
+                    }
+                }
+            ),
+            ((0, 3, 0), (11, 3, 9)),
+        )
+        with self.assertRaisesRegex(ValueError, "inclusive non-negative XYZ"):
+            validation_position_index_bounds(
+                {
+                    "validation_position_policy": {
+                        "position_index_min": [1, 3, 0],
+                        "position_index_max": [0, 3, 9],
+                    }
+                }
             )
 
     def test_applies_short_run_limits_without_touching_other_params(self):

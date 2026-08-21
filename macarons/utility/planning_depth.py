@@ -172,6 +172,35 @@ def validation_start_position_override(config: Any) -> Optional[tuple[int, ...]]
     return tuple(value)
 
 
+def validation_position_index_bounds(
+    config: Any,
+) -> Optional[tuple[tuple[int, int, int], tuple[int, int, int]]]:
+    """Return debug-only inclusive XYZ lattice bounds from a pinned policy."""
+
+    policy = _config_value(config, "validation_position_policy", None)
+    if policy is None:
+        return None
+    if not isinstance(policy, Mapping):
+        raise ValueError("validation_position_policy must be an object.")
+    try:
+        lower = tuple(policy["position_index_min"])
+        upper = tuple(policy["position_index_max"])
+    except (KeyError, TypeError) as error:
+        raise ValueError(
+            "validation_position_policy requires position_index_min/max."
+        ) from error
+    if (
+        len(lower) != 3
+        or len(upper) != 3
+        or any(type(value) is not int or value < 0 for value in lower + upper)
+        or any(lo > hi for lo, hi in zip(lower, upper))
+    ):
+        raise ValueError(
+            "validation_position_policy bounds must be inclusive non-negative XYZ triples."
+        )
+    return lower, upper
+
+
 def validation_uses_occupied_pose(config: Any) -> bool:
     """Return the explicit dataset occupancy policy, defaulting to legacy use."""
 

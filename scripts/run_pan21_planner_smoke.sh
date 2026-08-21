@@ -72,7 +72,8 @@ fi
 base_config="$repo_root/configs/test/$base_config_name"
 profile_path="$repo_root/configs/debug/$PROFILE.json"
 macarons_params="$repo_root/configs/macarons/macarons_default_training_config.json"
-for required in "$base_config" "$profile_path" "$macarons_params"; do
+spatial_policy=/home/ubuntu/Projects/Pioneer/experiments/pan-13-hkust/ue_derived_inspection/hkust_spatial_policy.json
+for required in "$base_config" "$profile_path" "$macarons_params" "$spatial_policy"; do
   if [[ ! -f "$required" ]]; then
     printf 'missing required input: %s\n' "$required" >&2
     exit 2
@@ -96,6 +97,7 @@ ln -s "$run_dir/results" "$repo_root/results"
 cp -p -- "$profile_path" "$run_dir/$PROFILE.json"
 cp -p -- "$macarons_params" "$run_dir/macarons_params.json"
 cp -p -- "$base_config" "$run_dir/base_config.json"
+cp -p -- "$spatial_policy" "$run_dir/hkust_spatial_policy.json"
 
 "$python_bin" - "$run_dir/base_config.json" "$run_dir/config.json" "$run_dir" <<'PY'
 import json
@@ -122,6 +124,16 @@ params_sha="$(sha256sum "$run_dir/macarons_params.json" | awk '{print $1}')"
 settings_sha="$(sha256sum "$repo_root/data/Macarons++/HKUST/settings.json" | awk '{print $1}')"
 occupied_sha="$(sha256sum "$repo_root/data/Macarons++/HKUST/occupied_pose.pt" | awk '{print $1}')"
 weight_sha="$(sha256sum "$repo_root/weights/macarons/trained_macarons.pth" | awk '{print $1}')"
+spatial_policy_sha="$(sha256sum "$run_dir/hkust_spatial_policy.json" | awk '{print $1}')"
+expected_spatial_policy_sha="$(
+  "$python_bin" -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["validation_position_policy"]["source_policy_sha256"])' \
+    "$run_dir/$PROFILE.json"
+)"
+if [[ "$spatial_policy_sha" != "$expected_spatial_policy_sha" ]]; then
+  printf 'spatial policy hash does not match debug profile\n' >&2
+  exit 2
+fi
 
 {
   printf 'schema_version=pan21.planner-run.v1\n'
@@ -135,6 +147,9 @@ weight_sha="$(sha256sum "$repo_root/weights/macarons/trained_macarons.pth" | awk
   printf 'settings_sha256=%s\n' "$settings_sha"
   printf 'occupied_pose_sha256=%s\n' "$occupied_sha"
   printf 'planner_weight_sha256=%s\n' "$weight_sha"
+  printf 'spatial_policy_sha256=%s\n' "$spatial_policy_sha"
+  printf 'planner_to_ue_cm=%s\n' '[planner_x*500,planner_z*500,planner_y*500]'
+  printf 'validation_position_index_bounds=%s\n' '[0,3,0]..[11,3,9]'
   printf 'expected_observations=2\n'
   printf 'expected_real_face_renders=12\n'
   printf 'validation_start_position_override=5,3,1,2,0\n'

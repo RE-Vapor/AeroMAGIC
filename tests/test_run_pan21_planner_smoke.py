@@ -17,6 +17,8 @@ class Pan21PlannerRunnerTests(unittest.TestCase):
         self.assertIn('config["dataset_path"] = str(run_dir / "data" / "Macarons++")', text)
         self.assertIn("isolated_dataset_overlay", text)
         self.assertIn("isolated_results_root", text)
+        self.assertIn("spatial policy hash does not match debug profile", text)
+        self.assertIn("validation_position_index_bounds", text)
         self.assertNotIn("PAN-24", text)
 
 

@@ -16,6 +16,7 @@ from ..utility.planning_depth import (
     scene_texture_atlas_size,
     set_planning_seeds,
     update_proxy_state,
+    validation_position_index_bounds,
     validation_start_position_override,
     validation_requires_complete_occupied_pose,
     validation_uses_occupied_pose,
@@ -680,6 +681,8 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
             "position_only camera is missing its planner spec/observation state."
         )
 
+    validation_position_bounds = validation_position_index_bounds(params)
+
     def camera_pose_index(planner_state_index):
         if position_only:
             return xyz_to_canonical_pose_index(planner_state_index, position_spec)
@@ -980,6 +983,7 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                 "valid_state_candidate_count": 0,
                 "observed_rejected_candidate_count": 0,
                 "occupied_rejected_candidate_count": 0,
+                "validation_bound_rejected_candidate_count": 0,
                 "collision_rejected_candidate_count": 0,
                 "rendered_candidate_count": 0,
                 "retained_beam_count": 0,
@@ -1008,29 +1012,62 @@ def compute_magician_trajectory(params, macarons, camera, gt_scene, surface_scen
                     )
 
                     def position_is_available(row):
-                        return not camera.check_if_pose_is_occupied(
+                        within_validation_bounds = (
+                            validation_position_bounds is None
+                            or all(
+                                lower <= int(value) <= upper
+                                for value, lower, upper in zip(
+                                    row,
+                                    validation_position_bounds[0],
+                                    validation_position_bounds[1],
+                                )
+                            )
+                        )
+                        return within_validation_bounds and not camera.check_if_pose_is_occupied(
                             camera_pose_index(row)
                         )
 
                     filter_occupied = getattr(
                         params, "pioneer_filter_occupied_position_candidates", False
                     )
-                    available_neighbor_indices = (
+                    bounded_neighbor_indices = (
                         [
                             row
                             for row in neighbor_indices
+                            if validation_position_bounds is None
+                            or all(
+                                lower <= int(value) <= upper
+                                for value, lower, upper in zip(
+                                    row,
+                                    validation_position_bounds[0],
+                                    validation_position_bounds[1],
+                                )
+                            )
+                        ]
+                    )
+                    available_neighbor_indices = (
+                        [
+                            row
+                            for row in bounded_neighbor_indices
                             if position_is_available(row)
                         ]
                         if filter_occupied
-                        else list(neighbor_indices)
+                        else bounded_neighbor_indices
                     )
                     valid_neighbors = position_state.valid_neighbors(
                         beam["current_pose_idx"],
-                        is_available=(position_is_available if filter_occupied else None),
+                        is_available=(
+                            position_is_available
+                            if filter_occupied or validation_position_bounds is not None
+                            else None
+                        ),
                     )
                     search_step_metrics[
+                        "validation_bound_rejected_candidate_count"
+                    ] += len(neighbor_indices) - len(bounded_neighbor_indices)
+                    search_step_metrics[
                         "occupied_rejected_candidate_count"
-                    ] += len(neighbor_indices) - len(available_neighbor_indices)
+                    ] += len(bounded_neighbor_indices) - len(available_neighbor_indices)
                     observed_rejected = (
                         len(available_neighbor_indices) - len(valid_neighbors)
                         if any(

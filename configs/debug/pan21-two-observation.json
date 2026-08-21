@@ -5,6 +5,12 @@
   "coverage_comparable": false,
   "output_suffix": "debug_pan21_two_observation",
   "validation_start_position_override": [5, 3, 1, 2, 0],
+  "validation_position_policy": {
+    "planner_to_ue_cm": "[planner_x*500, planner_z*500, planner_y*500]",
+    "position_index_min": [0, 3, 0],
+    "position_index_max": [11, 3, 9],
+    "source_policy_sha256": "993a6abb4d6c8ee4a86c1dbb3dc14b779c91d486c5b4b543cfcf2e5a8b3269fc"
+  },
   "overrides": {
     "validation_n_proxy_points": 100000,
     "beam_width": 3,
