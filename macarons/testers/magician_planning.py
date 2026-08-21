@@ -1579,6 +1579,7 @@ def run_magician_test(params_name,
         ("pioneer_cubemap_extrinsics_version", None),
         ("pioneer_canonical_orientation_indices", None),
         ("pioneer_filter_occupied_position_candidates", False),
+        ("validation_position_policy", None),
     ):
         setattr(params, name, getattr(test_params, name, default))
     if type(params.pioneer_filter_occupied_position_candidates) is not bool:
