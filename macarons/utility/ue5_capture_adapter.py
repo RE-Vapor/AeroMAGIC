@@ -18,13 +18,16 @@ from .ue5_observation_contract import (
     SCHEMA_VERSION,
     CanonicalFace,
     CanonicalObservationBundle,
+    camera_z_to_ray_range,
     validate_bundle,
 )
 
 
-UE_SCENE_DEPTH_CANDIDATE_ENCODING = (
-    "ue_scs_scene_depth_r_world_units_candidate_ray_range"
+UE_SCENE_DEPTH_ENCODING = (
+    "ue5_scs_scene_depth_camera_z_world_units_rgba16f_exr_r"
 )
+# Compatibility name for PAN-15 callers; PAN-20 validated the final meaning.
+UE_SCENE_DEPTH_CANDIDATE_ENCODING = UE_SCENE_DEPTH_ENCODING
 
 
 def _sha256(path: Path) -> str:
@@ -67,11 +70,11 @@ def _load_exr_r(root: Path, asset: Mapping[str, Any], image_size: Any) -> np.nda
 
 
 def adapt_pan15_raw_manifest(manifest_path: Path) -> CanonicalObservationBundle:
-    """Build a candidate Contract v1 bundle while preserving raw provenance.
+    """Build a Contract v1 bundle while preserving raw provenance.
 
-    PAN-15 provisionally interprets SCS_SCENE_DEPTH R as ray distance in UE
-    world units.  PAN-20 must accept or reject this explicit hypothesis using
-    the analytic level; this function does not claim final geometric truth.
+    PAN-20 established that SCS_SCENE_DEPTH exported through the RGBA16F EXR
+    R channel is optical-axis camera-z in UE world units.  It is converted to
+    metres and then to Euclidean ray range with the per-face pixel intrinsics.
     """
 
     manifest_path = Path(manifest_path).resolve()
@@ -98,8 +101,22 @@ def adapt_pan15_raw_manifest(manifest_path: Path) -> CanonicalObservationBundle:
             & (scene_depth > near_world)
             & (scene_depth < far_world)
         )
-        depth_range_m = np.full(scene_depth.shape, np.nan, dtype=np.float32)
-        depth_range_m[valid_mask] = scene_depth[valid_mask] / world_to_meters
+        height, width = (int(value) for value in item["image_size"])
+        fov_radians = np.deg2rad(float(item["fov_degrees"]))
+        focal = 0.5 * width / np.tan(0.5 * fov_radians)
+        canonical_K = np.asarray(
+            (
+                (focal, 0.0, 0.5 * (width - 1.0)),
+                (0.0, focal, 0.5 * (height - 1.0)),
+                (0.0, 0.0, 1.0),
+            ),
+            dtype=np.float64,
+        )
+        depth_camera_z_m = np.full(scene_depth.shape, np.nan, dtype=np.float32)
+        depth_camera_z_m[valid_mask] = scene_depth[valid_mask] / world_to_meters
+        depth_range_m = camera_z_to_ray_range(
+            depth_camera_z_m, canonical_K, valid_mask
+        )
         faces.append(
             CanonicalFace(
                 face_name=item["face_name"],
@@ -109,20 +126,28 @@ def adapt_pan15_raw_manifest(manifest_path: Path) -> CanonicalObservationBundle:
                 rgb_uint8=rgb,
                 depth_range_m=depth_range_m,
                 valid_mask=valid_mask.astype(np.bool_, copy=False),
-                K_pixel=np.asarray(item["K_pixel"], dtype=np.float64),
+                K_pixel=canonical_K,
                 T_world_from_cam=np.asarray(
                     item["T_world_from_cam"], dtype=np.float64
                 ),
                 image_size=tuple(item["image_size"]),
                 fov_degrees=float(item["fov_degrees"]),
                 metadata={
-                    "source_depth_encoding": UE_SCENE_DEPTH_CANDIDATE_ENCODING,
+                    "source_depth_encoding": UE_SCENE_DEPTH_ENCODING,
                     "canonical_depth_encoding": CANONICAL_DEPTH_ENCODING,
-                    "candidate_conversion_formula": "range_m=scene_depth_r/WorldToMeters",
+                    "conversion_formula": (
+                        "z_m=EXR_R/WorldToMeters; "
+                        "range_m=z_m*sqrt(((u-cx)/fx)^2+((v-cy)/fy)^2+1)"
+                    ),
                     "raw_scene_depth_exr_sha256": scene_depth_record["raw_exr"]["sha256"],
                     "raw_device_depth_exr_sha256": device_depth_record["raw_exr"]["sha256"],
                     "raw_device_depth_exr_path": device_depth_record["raw_exr"]["path"],
                     "valid_mask_rule": "finite and near < EXR_R < min(far,65504)",
+                    "raw_candidate_K_pixel": item["K_pixel"],
+                    "intrinsics_correction": (
+                        "PAN-20 UE pixel-centre model: fx=fy=N/(2*tan(FOV/2)); "
+                        "cx=cy=(N-1)/2"
+                    ),
                     "coordinate_conversion": "UE left-handed world to right-handed world by Y flip",
                 },
             )
@@ -143,9 +168,9 @@ def adapt_pan15_raw_manifest(manifest_path: Path) -> CanonicalObservationBundle:
             "engine_version": raw["engine_version"],
             "project_commit": raw["project_commit"],
             "capture_config_sha256": raw["capture_config_sha256"],
-            "source_depth_encoding": UE_SCENE_DEPTH_CANDIDATE_ENCODING,
+            "source_depth_encoding": UE_SCENE_DEPTH_ENCODING,
             "canonical_depth_encoding": CANONICAL_DEPTH_ENCODING,
-            "geometry_status": "candidate_only_pending_PAN-20",
+            "geometry_status": "validated_by_PAN-20",
         },
     )
     validate_bundle(bundle)
@@ -183,6 +208,7 @@ def raw_capture_summary(manifest_path: Path) -> Dict[str, Any]:
 
 
 __all__ = [
+    "UE_SCENE_DEPTH_ENCODING",
     "UE_SCENE_DEPTH_CANDIDATE_ENCODING",
     "adapt_pan15_raw_manifest",
     "raw_capture_summary",

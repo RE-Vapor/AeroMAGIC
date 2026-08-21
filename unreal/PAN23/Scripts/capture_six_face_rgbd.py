@@ -191,10 +191,13 @@ def main():
         )
         root_location = vec(root.get_actor_location())
         resolution = int(config["face_resolution"])
-        focal = 0.5 * (resolution - 1.0)
+        # UE raster pixels sample at half-pixel centres. For a 90 degree FOV,
+        # fx=fy=N/2 while the array-index principal point is (N-1)/2.
+        focal = 0.5 * resolution
+        principal = 0.5 * (resolution - 1.0)
         K_pixel = [
-            [focal, 0.0, focal],
-            [0.0, focal, focal],
+            [focal, 0.0, principal],
+            [0.0, focal, principal],
             [0.0, 0.0, 1.0],
         ]
         timestamp_ns = time.time_ns()
@@ -444,6 +447,7 @@ def main():
                 "device_depth_r": "UE SceneCaptureSource.SCS_DEVICE_DEPTH raw R from RGBA16F",
                 "readback_format_limit": "binary16 EXR source; 65504 world units is treated as invalid overflow/no-hit",
                 "geometry_authority": "raw_exr R channel; Python readback is diagnostic only",
+                "pixel_intrinsics": "UE pixel-centre convention fx=fy=N/(2*tan(FOV/2)), cx=cy=(N-1)/2",
                 "final_encoding_decision": "deferred to PAN-20",
             },
             "lighting_preset": config["lighting_preset"],

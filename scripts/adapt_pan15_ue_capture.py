@@ -42,7 +42,7 @@ def main() -> int:
         "canonical": validate_bundle(load_bundle(manifest)).as_dict(),
         "canonical_manifest": "canonical_bundle/manifest.json",
         "canonical_manifest_sha256": sha256(manifest),
-        "geometry_status": "candidate_only_pending_PAN-20",
+        "geometry_status": bundle.provenance["geometry_status"],
     }
     summary_path = manifest.parent / "adapter_summary.json"
     summary_path.write_text(

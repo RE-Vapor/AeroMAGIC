@@ -91,10 +91,15 @@ class UE5CaptureAdapterTests(unittest.TestCase):
             bundle = adapt_pan15_raw_manifest(manifest_path)
             summary = validate_bundle(bundle)
             self.assertEqual(summary.face_count, 6)
-            self.assertTrue(np.allclose(bundle.faces[0].depth_range_m, 5.0))
+            self.assertAlmostEqual(float(bundle.faces[0].depth_range_m[1, 1]), 5.0)
+            self.assertAlmostEqual(
+                float(bundle.faces[0].depth_range_m[0, 0]),
+                5.0 * np.sqrt(1.0 + 2.0 * (2.0 / 3.0) ** 2),
+                places=5,
+            )
             self.assertEqual(
                 bundle.provenance["geometry_status"],
-                "candidate_only_pending_PAN-20",
+                "validated_by_PAN-20",
             )
 
     def test_checksum_mismatch_is_rejected(self):
