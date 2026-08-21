@@ -14,6 +14,9 @@ class Pan21PlannerRunnerTests(unittest.TestCase):
         self.assertIn("validation_start_position_override=5,3,1,2,0", text)
         self.assertIn("tmux new-session", text)
         self.assertIn("refusing to run from a dirty worktree", text)
+        self.assertIn('config["dataset_path"] = str(run_dir / "data" / "Macarons++")', text)
+        self.assertIn("isolated_dataset_overlay", text)
+        self.assertIn("isolated_results_root", text)
         self.assertNotIn("PAN-24", text)
 
 

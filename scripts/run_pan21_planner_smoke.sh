@@ -81,6 +81,18 @@ done
 
 mkdir -p "$run_dir"
 run_dir="$(cd "$run_dir" && pwd)"
+shared_scene="$repo_root/data/Macarons++/HKUST"
+overlay_scene="$run_dir/data/Macarons++/HKUST"
+mkdir -p "$overlay_scene" "$run_dir/results"
+while IFS= read -r -d '' source; do
+  ln -s "$source" "$overlay_scene/$(basename "$source")"
+done < <(find "$shared_scene" -mindepth 1 -maxdepth 1 -print0)
+if [[ -e "$repo_root/results" || -L "$repo_root/results" ]]; then
+  printf 'refusing to replace existing worktree results path: %s\n' \
+    "$repo_root/results" >&2
+  exit 2
+fi
+ln -s "$run_dir/results" "$repo_root/results"
 cp -p -- "$profile_path" "$run_dir/$PROFILE.json"
 cp -p -- "$macarons_params" "$run_dir/macarons_params.json"
 cp -p -- "$base_config" "$run_dir/base_config.json"
@@ -93,6 +105,7 @@ from pathlib import Path
 source, output, run_dir = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
 config = json.loads(source.read_text(encoding="utf-8"))
 config.pop("debug_profile", None)
+config["dataset_path"] = str(run_dir / "data" / "Macarons++")
 config["experiment_run_id"] = "PAN-21-two-observation-one-move"
 config["experiment_run_dir"] = str(run_dir)
 config["experiment_metrics_dir"] = str(run_dir / "metrics")
@@ -125,6 +138,8 @@ weight_sha="$(sha256sum "$repo_root/weights/macarons/trained_macarons.pth" | awk
   printf 'expected_observations=2\n'
   printf 'expected_real_face_renders=12\n'
   printf 'validation_start_position_override=5,3,1,2,0\n'
+  printf 'isolated_dataset_overlay=%s\n' "$run_dir/data/Macarons++"
+  printf 'isolated_results_root=%s\n' "$run_dir/results"
   printf 'debug_only=true\ncoverage_comparable=false\n'
   printf 'started_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'command=%q ' "$python_bin" "$repo_root/test_magician_planning.py" \
