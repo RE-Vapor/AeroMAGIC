@@ -1,0 +1,18 @@
+{
+  "schema_version": "pan23.analytic-scene.v1",
+  "coordinate_frame": "UE centimetres, +X forward, +Y right, +Z up",
+  "actors": [
+    {"label": "PAN23_Analytic_FrontPlane", "mesh": "/Engine/BasicShapes/Cube.Cube", "location_ue_cm": [500.0, 0.0, 200.0], "scale": [0.05, 6.0, 6.0]},
+    {"label": "PAN23_Seam_Box_FrontRight", "mesh": "/Engine/BasicShapes/Cube.Cube", "location_ue_cm": [400.0, 400.0, 200.0], "scale": [1.0, 1.0, 2.0]},
+    {"label": "PAN23_Marker_PosX", "mesh": "/Engine/BasicShapes/Cone.Cone", "location_ue_cm": [300.0, 0.0, 200.0], "scale": [0.45, 0.45, 1.4]},
+    {"label": "PAN23_Marker_NegX", "mesh": "/Engine/BasicShapes/Cylinder.Cylinder", "location_ue_cm": [-300.0, 0.0, 200.0], "scale": [0.45, 0.45, 0.9]},
+    {"label": "PAN23_Marker_PosY", "mesh": "/Engine/BasicShapes/Sphere.Sphere", "location_ue_cm": [0.0, 300.0, 200.0], "scale": [0.7, 0.7, 0.7]},
+    {"label": "PAN23_Marker_NegY", "mesh": "/Engine/BasicShapes/Cube.Cube", "location_ue_cm": [0.0, -300.0, 200.0], "scale": [0.55, 0.9, 1.25]},
+    {"label": "PAN23_Marker_PosZ", "mesh": "/Engine/BasicShapes/Cone.Cone", "location_ue_cm": [0.0, 0.0, 500.0], "scale": [0.8, 0.8, 1.8]},
+    {"label": "PAN23_Marker_NegZ", "mesh": "/Engine/BasicShapes/Cylinder.Cylinder", "location_ue_cm": [0.0, 0.0, -100.0], "scale": [1.0, 1.0, 0.35]},
+    {"label": "PAN23_ShadowReceiver", "mesh": "/Engine/BasicShapes/Cube.Cube", "location_ue_cm": [0.0, 0.0, -175.0], "scale": [12.0, 12.0, 0.25]}
+  ],
+  "required_open_sky": true,
+  "analytic_front_plane_camera_z_m": 5.0,
+  "seam_geometry": "PAN23_Seam_Box_FrontRight crosses the front/right 45-degree boundary"
+}

@@ -1,0 +1,36 @@
+{
+  "schema_version": "pan23.ue5-rig.v1",
+  "engine_association": "5.4",
+  "level_path": "/Game/PAN23/Analytic/PAN23_Analytic",
+  "face_names": ["front", "back", "left", "right", "up", "down"],
+  "face_resolution": 256,
+  "fov_degrees": 90.0,
+  "near_m": 0.1,
+  "far_m": 1000.0,
+  "world_to_meters": 100.0,
+  "gpu_index": 1,
+  "rhi": "Vulkan",
+  "rig_root_location_ue_cm": [0.0, 0.0, 200.0],
+  "faces": [
+    {"face_name": "front", "rotation_degrees": [0.0, 0.0, 0.0], "expected_forward_ue": [1.0, 0.0, 0.0]},
+    {"face_name": "back", "rotation_degrees": [0.0, 180.0, 0.0], "expected_forward_ue": [-1.0, 0.0, 0.0]},
+    {"face_name": "left", "rotation_degrees": [0.0, -90.0, 0.0], "expected_forward_ue": [0.0, -1.0, 0.0]},
+    {"face_name": "right", "rotation_degrees": [0.0, 90.0, 0.0], "expected_forward_ue": [0.0, 1.0, 0.0]},
+    {"face_name": "up", "rotation_degrees": [90.0, 0.0, 0.0], "expected_forward_ue": [0.0, 0.0, 1.0]},
+    {"face_name": "down", "rotation_degrees": [-90.0, 0.0, 0.0], "expected_forward_ue": [0.0, 0.0, -1.0]}
+  ],
+  "lighting_preset": {
+    "sky_atmosphere": true,
+    "directional_light_rotation_degrees": [-50.0, -35.0, 0.0],
+    "directional_light_intensity_lux": 8.0,
+    "sky_light": true,
+    "volumetric_cloud": false
+  },
+  "console_variables": {
+    "r.DefaultFeature.AutoExposure": 0,
+    "r.DefaultFeature.MotionBlur": 0,
+    "r.MotionBlurQuality": 0,
+    "r.AntiAliasingMethod": 1,
+    "r.TemporalAA.Upsampling": 0
+  }
+}
