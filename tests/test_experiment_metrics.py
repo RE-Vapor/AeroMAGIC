@@ -226,6 +226,7 @@ class ExperimentMetricsTests(unittest.TestCase):
         bundle = result["pioneer_observation"]["bundles"][0]
         self.assertEqual(bundle["depth_source"], "DA3")
         self.assertEqual(bundle["depth_inference_count"], 6)
+        self.assertEqual(bundle["depth_provider_event_count"], 6)
         self.assertTrue(bundle["artifact_committed"])
         self.assertEqual(
             result["pioneer_observation"]["artifact_committed_bundle_count"], 1

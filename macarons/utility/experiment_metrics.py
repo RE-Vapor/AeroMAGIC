@@ -245,6 +245,9 @@ class TrajectoryMetricsRecorder:
         face_count = int(bundle_data.get("face_count", len(face_point_counts)))
         depth_source = str(bundle_data.get("depth_source", "GT")).upper()
         depth_inference_count = int(bundle_data.get("depth_inference_count", 0))
+        depth_provider_event_count = int(
+            bundle_data.get("depth_provider_event_count", depth_inference_count)
+        )
         depth_faces = [dict(face) for face in bundle_data.get("depth_faces", [])]
         artifact_transaction_version = bundle_data.get(
             "artifact_transaction_version"
@@ -253,7 +256,7 @@ class TrajectoryMetricsRecorder:
         if depth_source != "GT":
             if bundle_data.get("renderer_zbuf_read") is not False:
                 raise ValueError("Non-GT cubemap depth must not read renderer z-buffer.")
-            if depth_inference_count != face_count or len(depth_faces) != face_count:
+            if depth_provider_event_count != face_count or len(depth_faces) != face_count:
                 raise ValueError(
                     "Non-GT cubemap depth requires one provenance row per face."
                 )
@@ -263,7 +266,11 @@ class TrajectoryMetricsRecorder:
             ):
                 raise ValueError("Cubemap face depth sources must match the bundle source.")
             if (
-                artifact_transaction_version != "pioneer-bundle-commit-v1"
+                artifact_transaction_version
+                not in {
+                    "pioneer-bundle-commit-v1",
+                    "pan19-canonical-manifest-v1",
+                }
                 or artifact_committed is not True
             ):
                 raise ValueError(
@@ -296,6 +303,7 @@ class TrajectoryMetricsRecorder:
                     bundle_data.get("renderer_zbuf_read", depth_source == "GT")
                 ),
                 "depth_inference_count": depth_inference_count,
+                "depth_provider_event_count": depth_provider_event_count,
                 "depth_cache_hit_count": int(
                     bundle_data.get("depth_cache_hit_count", 0)
                 ),
@@ -574,6 +582,12 @@ class TrajectoryMetricsRecorder:
                 "depth_inference_count": int(
                     sum(
                         bundle["depth_inference_count"]
+                        for bundle in self.observation_bundles
+                    )
+                ),
+                "depth_provider_event_count": int(
+                    sum(
+                        bundle["depth_provider_event_count"]
                         for bundle in self.observation_bundles
                     )
                 ),

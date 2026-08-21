@@ -1114,6 +1114,12 @@ def process_cubemap_observation(
         "depth_inference_count": int(
             bundle.metadata.get("depth_inference_count", 0)
         ),
+        "depth_provider_event_count": int(
+            bundle.metadata.get(
+                "depth_provider_event_count",
+                bundle.metadata.get("depth_inference_count", 0),
+            )
+        ),
         "depth_provider_seconds": float(
             bundle.metadata.get("depth_provider_seconds", 0.0)
         ),

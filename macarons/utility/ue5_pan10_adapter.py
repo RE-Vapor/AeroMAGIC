@@ -136,6 +136,11 @@ def canonical_bundle_to_pan10(
                     "world_axis_transform": "ue-contract-rh-to-magician-xyz-v1",
                     "request_id": bundle.request_id,
                     "frame_id": bundle.frame_id,
+                    "depth_cache_metadata": {
+                        "adapter_version": ADAPTER_VERSION,
+                        "source_revision": bundle.provenance.get("source_revision"),
+                        "source_tree_sha256": bundle.provenance.get("source_tree_sha256"),
+                    },
                 },
             )
         )
@@ -155,7 +160,10 @@ def canonical_bundle_to_pan10(
             "adapter_version": ADAPTER_VERSION,
             "request_id": bundle.request_id,
             "frame_id": bundle.frame_id,
-            "capture_timestamp_ns": bundle.capture_timestamp_ns,
+            "capture_timestamp_unix_ns": bundle.capture_timestamp_ns,
+            "renderer_zbuf_read": False,
+            "depth_inference_count": 0,
+            "depth_provider_event_count": 6,
             "artifact_committed": True,
             "artifact_transaction_version": "pan19-canonical-manifest-v1",
         },

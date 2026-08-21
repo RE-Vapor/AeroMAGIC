@@ -25,6 +25,9 @@ class UE5PAN10AdapterTests(unittest.TestCase):
         )
         self.assertEqual(adapted.render_count, 6)
         self.assertEqual(adapted.metadata["depth_source"], "UE5")
+        self.assertFalse(adapted.metadata["renderer_zbuf_read"])
+        self.assertEqual(adapted.metadata["depth_inference_count"], 0)
+        self.assertEqual(adapted.metadata["depth_provider_event_count"], 6)
         for source, face in zip(canonical.faces, adapted.faces):
             expected, _ = backproject_face(source)
             expected = (
