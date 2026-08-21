@@ -30,8 +30,9 @@ if [[ -e "$output_dir" ]]; then
 fi
 
 commit_sha="$(git -C "$repo_root" rev-parse HEAD)"
+mkdir -p -- "$(dirname "$output_dir")"
 command=(
-  "$python_bin" "$repo_root/scripts/validate_pan21_smoke_loop.py"
+  "$python_bin" -m scripts.validate_pan21_smoke_loop
   --p0-manifest "$p0_manifest"
   --p1-manifest "$p1_manifest"
   --planner-metrics "$planner_metrics"
@@ -40,6 +41,7 @@ command=(
 )
 
 set +e
+cd "$repo_root"
 "${command[@]}" 2>&1 | tee "${output_dir}.runner.log"
 exit_code="${PIPESTATUS[0]}"
 set -e

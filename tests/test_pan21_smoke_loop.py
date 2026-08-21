@@ -14,6 +14,13 @@ from scripts.validate_pan21_smoke_loop import run_smoke
 
 
 class Pan21SmokeLoopTests(unittest.TestCase):
+    def test_shell_runner_uses_repo_module_and_creates_only_parent(self):
+        runner = Path(__file__).resolve().parents[1] / "scripts" / "run_pan21_smoke_loop.sh"
+        text = runner.read_text(encoding="utf-8")
+        self.assertIn("mkdir -p -- \"$(dirname \"$output_dir\")\"", text)
+        self.assertIn("-m scripts.validate_pan21_smoke_loop", text)
+        self.assertIn('cd "$repo_root"', text)
+
     def test_two_bundle_loop_and_atomic_negative(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
