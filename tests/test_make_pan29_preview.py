@@ -70,7 +70,7 @@ class MakePAN29PreviewTests(unittest.TestCase):
                 "real_face_render_count": 120,
                 "bundles": bundles,
             },
-            "run": {"depth_source": "GT", "planning_observation_mode": "cubemap6"},
+            "run": {"planning_observation_mode": "cubemap6"},
         }
         metrics_path = root / "metrics.json"
         metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
@@ -89,6 +89,7 @@ class MakePAN29PreviewTests(unittest.TestCase):
             "schema_version": "pan29.ue5-postrun-replay.v1",
             "selected_bundle_ids": list(IDS),
             "source": {
+                "depth_source": "GT",
                 "metrics": {"path": str(metrics_path), "sha256": sha256(metrics_path)},
                 "capture_root": str(capture),
                 "original_preview": {

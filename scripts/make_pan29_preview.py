@@ -212,7 +212,7 @@ def generate_pan29_preview(
     if not all(isinstance(value, Mapping) for value in (run, pioneer, trajectory)):
         raise ValueError("metrics lack run/pioneer/trajectory records")
     assert isinstance(run, Mapping) and isinstance(pioneer, Mapping) and isinstance(trajectory, Mapping)
-    if str(run.get("depth_source", "")).upper() != "GT" or run.get("planning_observation_mode") != "cubemap6":
+    if str(source.get("depth_source", "")).upper() != "GT" or run.get("planning_observation_mode") != "cubemap6":
         raise ValueError("preview source must be the GT cubemap6 run")
     bundles = pioneer.get("bundles")
     if not isinstance(bundles, list) or len(bundles) != 20 or int(pioneer.get("bundle_count", -1)) != 20:
