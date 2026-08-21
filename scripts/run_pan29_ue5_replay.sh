@@ -8,6 +8,7 @@ SOURCE_METRICS="$SOURCE_RUN/metrics_debug_pioneer20/pioneer_HKUST_0.online.json"
 SOURCE_CAPTURE=/home/ubuntu/Projects/Pioneer/experiments/inputs/shared/data/Macarons++/HKUST/pan11_pioneer_hkust_position_only_20obs_a1_memory_debug_pioneer20/training/0
 SOURCE_LMDB=/home/ubuntu/Projects/Pioneer/experiments/runs/integration-all-experiments/results/scene_exploration/pan11_pioneer_hkust_position_only_20obs_a1_lmdb_debug_pioneer20
 SOURCE_PREVIEW="$SOURCE_RUN/hkust_position_only_20obs_preview.png"
+SOURCE_PREVIEW_SIDECAR="${SOURCE_PREVIEW%.png}.json"
 SOURCE_REGISTRY_ID=PAN-11-PIONEER-HKUST-POSITION-ONLY-20OBS-20260821
 SPATIAL_POLICY=/home/ubuntu/Projects/Pioneer/experiments/pan-13-hkust/ue_derived_inspection/hkust_spatial_policy.json
 UE_INSPECTION=/home/ubuntu/Projects/Pioneer/experiments/pan-13-hkust/ue_derived_inspection/ue_derived_inspection.json
@@ -244,7 +245,7 @@ tmux has-session -t "$session" 2>/dev/null && { printf 'tmux session already exi
 source_config="$repo_root/configs/test/test_pioneer_hkust_pan11_position_only_20obs_a1_config.json"
 source_manifest="$SOURCE_RUN/manifest.txt"
 capture_config_source="$repo_root/unreal/PAN29/Config/pan29_hkust_replay.json"
-for required in "$python_bin" "$UE_COMMAND" "$source_config" "$source_manifest" "$SOURCE_METRICS" "$SOURCE_CAPTURE/frames" "$SOURCE_LMDB/data.mdb" "$SOURCE_PREVIEW" "$SOURCE_PREVIEW.json" "$SPATIAL_POLICY" "$UE_INSPECTION" "$UE_PROJECT" "$UE_DEFAULT_ENGINE" "$UE_LEVEL" "$capture_config_source"; do
+for required in "$python_bin" "$UE_COMMAND" "$source_config" "$source_manifest" "$SOURCE_METRICS" "$SOURCE_CAPTURE/frames" "$SOURCE_LMDB/data.mdb" "$SOURCE_PREVIEW" "$SOURCE_PREVIEW_SIDECAR" "$SPATIAL_POLICY" "$UE_INSPECTION" "$UE_PROJECT" "$UE_DEFAULT_ENGINE" "$UE_LEVEL" "$capture_config_source"; do
   [[ -e "$required" ]] || { printf 'missing PAN-29 input: %s\n' "$required" >&2; exit 2; }
 done
 

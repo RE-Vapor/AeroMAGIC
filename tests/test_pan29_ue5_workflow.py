@@ -104,6 +104,8 @@ class PAN29UE5WorkflowTests(unittest.TestCase):
         self.assertIn("replay_plan_sha256", source)
         self.assertIn("replay_result.pending.json", source)
         self.assertIn("make_pan29_preview.py", source)
+        self.assertIn('SOURCE_PREVIEW_SIDECAR="${SOURCE_PREVIEW%.png}.json"', source)
+        self.assertNotIn('"$SOURCE_PREVIEW.json"', source)
         self.assertIn("process_exit", source)
         self.assertIn("-process-failed-", source)
         self.assertIn("( set -euo pipefail; run_science )", source)
