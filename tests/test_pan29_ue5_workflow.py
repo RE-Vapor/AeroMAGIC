@@ -100,7 +100,7 @@ class PAN29UE5WorkflowTests(unittest.TestCase):
         self.assertIn("tmux new-session", source)
         self.assertIn("refusing to reuse", source)
         self.assertIn("make_pan29_replay_manifest.py", source)
-        self.assertIn("process_pan29_replay_capture.py", source)
+        self.assertIn("-m scripts.process_pan29_replay_capture", source)
         self.assertIn("replay_plan_sha256", source)
         self.assertIn("replay_result.pending.json", source)
         self.assertIn("make_pan29_preview.py", source)

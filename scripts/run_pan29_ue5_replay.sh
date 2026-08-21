@@ -122,7 +122,7 @@ run_inside_tmux() {
       mv "$temporary" "$final_capture"
 
       set +e
-      "$python_bin" "$repo_root/scripts/process_pan29_replay_capture.py" \
+      "$python_bin" -m scripts.process_pan29_replay_capture \
         --plan "$run_dir/replay_plan.json" \
         --observation-id "$observation_id" \
         --request "$final_capture/request.json" \
