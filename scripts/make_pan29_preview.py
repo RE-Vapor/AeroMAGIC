@@ -348,14 +348,28 @@ def generate_pan29_preview(
         draw.text((36, top + 72), f"step {observation_id + 1}/20", font=_font(20), fill=MUTED)
         pose = row["planner_position_scene_units"]
         draw.text((36, top + 110), f"P [{pose[0]:.2f}, {pose[1]:.2f}, {pose[2]:.2f}]", font=_font(17), fill=MUTED)
+        source_timestamp = str(row["source_capture_timestamp_utc"])
+        timestamp_date, separator, timestamp_time = source_timestamp.partition("T")
+        draw.text((36, top + 140), "source timestamp (UTC)", font=_font(14), fill=MUTED)
+        draw.text((36, top + 162), timestamp_date, font=_font(14), fill=MUTED)
         draw.text(
-            (36, top + 142),
-            "source ts · " + str(row["source_capture_timestamp_utc"]),
-            font=_font(15),
+            (36, top + 183),
+            timestamp_time if separator else source_timestamp,
+            font=_font(14),
             fill=MUTED,
         )
-        policy = "inside PAN13 fly policy" if row["within_pan13_conservative_fly_volume"] else "post-hoc · outside fly policy"
-        draw.text((36, top + 186), policy, font=_font(16, bold=True), fill=policy_color)
+        policy_lines = (
+            ("inside PAN13 fly policy",)
+            if row["within_pan13_conservative_fly_volume"]
+            else ("post-hoc replay", "outside PAN13 fly policy")
+        )
+        for line_index, policy_line in enumerate(policy_lines):
+            draw.text(
+                (36, top + 216 + 19 * line_index),
+                policy_line,
+                font=_font(14, bold=True),
+                fill=policy_color,
+            )
 
         x_cursor = label_width
         for face in FACE_NAMES:
