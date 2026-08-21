@@ -1,0 +1,23 @@
+{
+  "face_count": 6,
+  "fov_degrees": 90.0,
+  "frame_id": "pan19-synthetic-frame",
+  "image_size": [
+    5,
+    5
+  ],
+  "manifest": "/home/ubuntu/Projects/Pioneer/recovery/worktrees/PAN-19-CONTRACT/fixtures/pan19_contract_v1/manifest.json",
+  "manifest_sha256": "6587482e04c644c8e72ad7bf8756bf5b3818a3a4cbece6625b296778f397a693",
+  "negative_missing_face": {
+    "rejection": "faces must be exactly ordered as ('front', 'back', 'left', 'right', 'up', 'down'); received ('front', 'back', 'left', 'right', 'up')",
+    "result": "PASS"
+  },
+  "negative_missing_face_manifest": "/home/ubuntu/Projects/Pioneer/recovery/worktrees/PAN-19-CONTRACT/fixtures/pan19_contract_v1/negative_missing_down_manifest.json",
+  "negative_missing_face_manifest_sha256": "7c81040bfb735eb7009b06879a008b66e43a1f1c3c70ffa71912dcfe5ebe9869",
+  "no_hit_count": 0,
+  "request_id": "pan19-synthetic-request",
+  "result": "PASS",
+  "schema_version": "pioneer.ue5-observation.v1",
+  "task": "PAN-19",
+  "valid_depth_count": 150
+}

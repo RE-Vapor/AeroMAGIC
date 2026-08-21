@@ -1,0 +1,411 @@
+{
+  "capture_timestamp_ns": 1725000000000000000,
+  "face_names": [
+    "front",
+    "back",
+    "left",
+    "right",
+    "up"
+  ],
+  "faces": [
+    {
+      "K_pixel": [
+        [
+          2.0,
+          0.0,
+          2.0
+        ],
+        [
+          0.0,
+          2.0,
+          2.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "T_world_from_cam": [
+        [
+          -1.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          -1.0,
+          0.0,
+          2.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          3.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "assets": {
+        "depth_range_m": {
+          "bytes": 228,
+          "path": "faces/front/depth_range_m.npy",
+          "sha256": "e5fe0134abee7ef00675927ec80596ba722ce427ed5e0cbc0401735617a1f6f1"
+        },
+        "rgb_uint8": {
+          "bytes": 203,
+          "path": "faces/front/rgb_uint8.npy",
+          "sha256": "28223ca7a052826cc497ed394773fd2578bfee4ee0f0c74c3363dd107714f80f"
+        },
+        "valid_mask": {
+          "bytes": 153,
+          "path": "faces/front/valid_mask.npy",
+          "sha256": "a305fa605a6fbdceb4b0835ac4d7f5935cfc0d17934ace37888469cc33537903"
+        }
+      },
+      "capture_timestamp_ns": 1725000000000000000,
+      "face_name": "front",
+      "fov_degrees": 90.0,
+      "frame_id": "pan19-synthetic-frame",
+      "image_size": [
+        5,
+        5
+      ],
+      "metadata": {
+        "canonical_depth_encoding": "euclidean_ray_range_m",
+        "fixture": "analytic_frontoparallel_plane",
+        "plane_camera_z_m": 2.0,
+        "source_depth_encoding": "camera_z_m"
+      },
+      "request_id": "pan19-synthetic-request"
+    },
+    {
+      "K_pixel": [
+        [
+          2.0,
+          0.0,
+          2.0
+        ],
+        [
+          0.0,
+          2.0,
+          2.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "T_world_from_cam": [
+        [
+          1.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          -1.0,
+          0.0,
+          2.0
+        ],
+        [
+          0.0,
+          0.0,
+          -1.0,
+          3.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "assets": {
+        "depth_range_m": {
+          "bytes": 228,
+          "path": "faces/back/depth_range_m.npy",
+          "sha256": "e5fe0134abee7ef00675927ec80596ba722ce427ed5e0cbc0401735617a1f6f1"
+        },
+        "rgb_uint8": {
+          "bytes": 203,
+          "path": "faces/back/rgb_uint8.npy",
+          "sha256": "34592df86071502cf4595e790b7e2477008f1aa321f4a80f8a214aac1c2e512f"
+        },
+        "valid_mask": {
+          "bytes": 153,
+          "path": "faces/back/valid_mask.npy",
+          "sha256": "a305fa605a6fbdceb4b0835ac4d7f5935cfc0d17934ace37888469cc33537903"
+        }
+      },
+      "capture_timestamp_ns": 1725000000000000000,
+      "face_name": "back",
+      "fov_degrees": 90.0,
+      "frame_id": "pan19-synthetic-frame",
+      "image_size": [
+        5,
+        5
+      ],
+      "metadata": {
+        "canonical_depth_encoding": "euclidean_ray_range_m",
+        "fixture": "analytic_frontoparallel_plane",
+        "plane_camera_z_m": 2.0,
+        "source_depth_encoding": "camera_z_m"
+      },
+      "request_id": "pan19-synthetic-request"
+    },
+    {
+      "K_pixel": [
+        [
+          2.0,
+          0.0,
+          2.0
+        ],
+        [
+          0.0,
+          2.0,
+          2.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "T_world_from_cam": [
+        [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ],
+        [
+          0.0,
+          -1.0,
+          0.0,
+          2.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0,
+          3.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "assets": {
+        "depth_range_m": {
+          "bytes": 228,
+          "path": "faces/left/depth_range_m.npy",
+          "sha256": "e5fe0134abee7ef00675927ec80596ba722ce427ed5e0cbc0401735617a1f6f1"
+        },
+        "rgb_uint8": {
+          "bytes": 203,
+          "path": "faces/left/rgb_uint8.npy",
+          "sha256": "0933e317c0898f8d878111767c0ebda01fc47d316c54b88a18d55f5dbbe1bb56"
+        },
+        "valid_mask": {
+          "bytes": 153,
+          "path": "faces/left/valid_mask.npy",
+          "sha256": "a305fa605a6fbdceb4b0835ac4d7f5935cfc0d17934ace37888469cc33537903"
+        }
+      },
+      "capture_timestamp_ns": 1725000000000000000,
+      "face_name": "left",
+      "fov_degrees": 90.0,
+      "frame_id": "pan19-synthetic-frame",
+      "image_size": [
+        5,
+        5
+      ],
+      "metadata": {
+        "canonical_depth_encoding": "euclidean_ray_range_m",
+        "fixture": "analytic_frontoparallel_plane",
+        "plane_camera_z_m": 2.0,
+        "source_depth_encoding": "camera_z_m"
+      },
+      "request_id": "pan19-synthetic-request"
+    },
+    {
+      "K_pixel": [
+        [
+          2.0,
+          0.0,
+          2.0
+        ],
+        [
+          0.0,
+          2.0,
+          2.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "T_world_from_cam": [
+        [
+          0.0,
+          0.0,
+          -1.0,
+          1.0
+        ],
+        [
+          0.0,
+          -1.0,
+          0.0,
+          2.0
+        ],
+        [
+          -1.0,
+          0.0,
+          0.0,
+          3.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "assets": {
+        "depth_range_m": {
+          "bytes": 228,
+          "path": "faces/right/depth_range_m.npy",
+          "sha256": "e5fe0134abee7ef00675927ec80596ba722ce427ed5e0cbc0401735617a1f6f1"
+        },
+        "rgb_uint8": {
+          "bytes": 203,
+          "path": "faces/right/rgb_uint8.npy",
+          "sha256": "37644f341511f0daac907eb7a1b7b2c4d21476563870963670471f6c609ae318"
+        },
+        "valid_mask": {
+          "bytes": 153,
+          "path": "faces/right/valid_mask.npy",
+          "sha256": "a305fa605a6fbdceb4b0835ac4d7f5935cfc0d17934ace37888469cc33537903"
+        }
+      },
+      "capture_timestamp_ns": 1725000000000000000,
+      "face_name": "right",
+      "fov_degrees": 90.0,
+      "frame_id": "pan19-synthetic-frame",
+      "image_size": [
+        5,
+        5
+      ],
+      "metadata": {
+        "canonical_depth_encoding": "euclidean_ray_range_m",
+        "fixture": "analytic_frontoparallel_plane",
+        "plane_camera_z_m": 2.0,
+        "source_depth_encoding": "camera_z_m"
+      },
+      "request_id": "pan19-synthetic-request"
+    },
+    {
+      "K_pixel": [
+        [
+          2.0,
+          0.0,
+          2.0
+        ],
+        [
+          0.0,
+          2.0,
+          2.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "T_world_from_cam": [
+        [
+          -1.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          2.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0,
+          3.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "assets": {
+        "depth_range_m": {
+          "bytes": 228,
+          "path": "faces/up/depth_range_m.npy",
+          "sha256": "e5fe0134abee7ef00675927ec80596ba722ce427ed5e0cbc0401735617a1f6f1"
+        },
+        "rgb_uint8": {
+          "bytes": 203,
+          "path": "faces/up/rgb_uint8.npy",
+          "sha256": "77eabd2b5cf02d8b348c61ae93ae14b4b4167e42f5d82cfb4b876c740320ecb7"
+        },
+        "valid_mask": {
+          "bytes": 153,
+          "path": "faces/up/valid_mask.npy",
+          "sha256": "a305fa605a6fbdceb4b0835ac4d7f5935cfc0d17934ace37888469cc33537903"
+        }
+      },
+      "capture_timestamp_ns": 1725000000000000000,
+      "face_name": "up",
+      "fov_degrees": 90.0,
+      "frame_id": "pan19-synthetic-frame",
+      "image_size": [
+        5,
+        5
+      ],
+      "metadata": {
+        "canonical_depth_encoding": "euclidean_ray_range_m",
+        "fixture": "analytic_frontoparallel_plane",
+        "plane_camera_z_m": 2.0,
+        "source_depth_encoding": "camera_z_m"
+      },
+      "request_id": "pan19-synthetic-request"
+    }
+  ],
+  "frame_id": "pan19-synthetic-frame",
+  "position_world_m": [
+    1.0,
+    2.0,
+    3.0
+  ],
+  "provenance": {
+    "canonical_depth_encoding": "euclidean_ray_range_m",
+    "fixture": "analytic_frontoparallel_plane",
+    "source_depth_encoding": "camera_z_m",
+    "task": "PAN-19"
+  },
+  "request_id": "pan19-synthetic-request",
+  "schema_version": "pioneer.ue5-observation.v1"
+}
