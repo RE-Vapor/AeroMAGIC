@@ -195,7 +195,7 @@ def _lighting_snapshot(directional, skylight):
         "sky_light": {
             "actor_label": skylight.get_actor_label(),
             "intensity_scale": _component_float(
-                skylight_component, "intensity_scale"
+                skylight_component, "intensity"
             ),
             "real_time_capture": bool(
                 skylight_component.get_editor_property("real_time_capture")
@@ -256,7 +256,7 @@ def apply_lighting_ablation(actors, config):
             intensity_scale = float(skylight_override["intensity_scale"])
             if not math.isfinite(intensity_scale) or intensity_scale < 0.0:
                 raise RuntimeError("PAN-31 sky intensity must be non-negative")
-            skylight_component.set_editor_property("intensity_scale", intensity_scale)
+            skylight_component.set_editor_property("intensity", intensity_scale)
         if bool(skylight_override.get("recapture_scene", False)):
             skylight_component.set_mobility(unreal.ComponentMobility.MOVABLE)
             skylight_component.set_editor_property("real_time_capture", True)
