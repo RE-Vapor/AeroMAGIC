@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import os
@@ -23,8 +23,8 @@ OBSERVATION_IDS = (0, 12, 24, 36, 49)
 FACE_NAMES = ("front", "back", "left", "right", "up", "down")
 VARIANTS = (
     ("baseline", "A · PAN-30 baseline"),
-    ("exposure", "B · derived exposure only · +1 EV"),
-    ("relight", "C · same +1 EV · UE5 relight"),
+    ("exposure", "B · derived exposure only"),
+    ("relight", "C · same exposure · UE5 relight"),
 )
 BACKGROUND = (13, 16, 21)
 PANEL = (24, 29, 38)
@@ -181,14 +181,26 @@ def _canonical_plan_rows(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _validate_control(evidence: Mapping[str, ReplayEvidence]) -> None:
+def _validate_control(evidence: Mapping[str, ReplayEvidence]) -> float:
     baseline = evidence["baseline"]
     baseline_rows = _canonical_plan_rows(baseline.plan)
     baseline_metrics = baseline.plan["source"]["metrics"]["sha256"]
-    expected_variants = {
-        "exposure": "exposure_only_srgb_ev_plus_1_v2",
-        "relight": "balanced_relight_srgb_ev_plus_1_v3",
-    }
+    exposure_spec = evidence["exposure"].config.get("lighting_ablation")
+    relight_spec = evidence["relight"].config.get("lighting_ablation")
+    if not isinstance(exposure_spec, Mapping) or not isinstance(relight_spec, Mapping):
+        raise ValueError("treatment configs must contain lighting ablation contracts")
+    expected_variants = {"exposure": exposure_spec.get("variant_id"), "relight": relight_spec.get("variant_id")}
+    if not all(isinstance(value, str) and value for value in expected_variants.values()):
+        raise ValueError("treatment configs must name distinct lighting variants")
+    if expected_variants["exposure"] == expected_variants["relight"]:
+        raise ValueError("exposure and relight variants must be distinct")
+    shared_exposure_ev = float(exposure_spec.get("post_read_exposure_transform_ev", 99.0))
+    if shared_exposure_ev <= 0.0 or float(relight_spec.get("post_read_exposure_transform_ev", 99.0)) != shared_exposure_ev:
+        raise ValueError("exposure and relight treatments must share one positive exposure transform")
+    if exposure_spec.get("directional_light") is not None or exposure_spec.get("sky_light") is not None:
+        raise ValueError("exposure-only treatment unexpectedly changes UE5 lighting")
+    if not isinstance(relight_spec.get("directional_light"), Mapping) or not isinstance(relight_spec.get("sky_light"), Mapping):
+        raise ValueError("relight treatment must change both direct and ambient UE5 lighting")
     for name, current in evidence.items():
         if _canonical_plan_rows(current.plan) != baseline_rows:
             raise ValueError(f"{name} changed observation identity, pose, or source time")
@@ -203,20 +215,43 @@ def _validate_control(evidence: Mapping[str, ReplayEvidence]) -> None:
             raise ValueError(f"{name} lighting variant contract differs")
         if float(spec.get("capture_exposure_compensation_ev", 99.0)) != 0.0:
             raise ValueError(f"{name} unexpectedly changed UE capture exposure")
-        if float(spec.get("post_read_exposure_transform_ev", 99.0)) != 1.0:
-            raise ValueError(f"{name} did not use the shared deterministic +1 EV transform")
+        if float(spec.get("post_read_exposure_transform_ev", 99.0)) != shared_exposure_ev:
+            raise ValueError(f"{name} did not use the shared deterministic exposure transform")
         for observation_id in OBSERVATION_IDS:
             raw = _read_json(current.run_dir / "captures" / f"{observation_id:06d}" / "raw_bundle" / "manifest.json")
             applied = raw.get("lighting_ablation")
             if not isinstance(applied, Mapping) or applied.get("variant_id") != expected_variants[name] or applied.get("applied") is not True:
                 raise ValueError(f"{name} observation {observation_id} lacks applied lighting provenance")
+            if float(applied.get("post_read_exposure_transform_ev", 99.0)) != shared_exposure_ev:
+                raise ValueError(f"{name} observation {observation_id} applied the wrong exposure transform")
+            before = applied.get("before")
+            after = applied.get("after")
+            if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+                raise ValueError(f"{name} observation {observation_id} lacks UE5 lighting snapshots")
+            if name == "exposure":
+                if before != after:
+                    raise ValueError(f"{name} observation {observation_id} changed UE5 lighting")
+            else:
+                directional = after.get("directional_light")
+                sky = after.get("sky_light")
+                directional_spec = spec["directional_light"]
+                sky_spec = spec["sky_light"]
+                if (
+                    not isinstance(directional, Mapping)
+                    or float(directional.get("intensity", -1.0)) != float(directional_spec["intensity"])
+                    or float(directional.get("source_angle_degrees", -1.0)) != float(directional_spec["source_angle_degrees"])
+                    or not isinstance(sky, Mapping)
+                    or float(sky.get("intensity_scale", -1.0)) != float(sky_spec["intensity_scale"])
+                    or sky.get("real_time_capture") is not True
+                ):
+                    raise ValueError(f"{name} observation {observation_id} did not apply the requested UE5 lighting")
             faces = raw.get("faces")
             if not isinstance(faces, list) or len(faces) != 6:
                 raise ValueError(f"{name} observation {observation_id} raw faces are incomplete")
             transforms = [face.get("rgb_post_read_exposure_transform") for face in faces]
             if any(
                 not isinstance(transform, Mapping)
-                or float(transform.get("exposure_ev", 99.0)) != 1.0
+                or float(transform.get("exposure_ev", 99.0)) != shared_exposure_ev
                 or int(transform.get("changed_channel_count", 0)) <= 0
                 for transform in transforms
             ):
@@ -226,9 +261,17 @@ def _validate_control(evidence: Mapping[str, ReplayEvidence]) -> None:
         for name in ("exposure", "relight"):
             if not np.array_equal(evidence[name].masks[observation_id], reference_mask):
                 raise ValueError(f"{name} changed ERP geometry mask at ID {observation_id}")
+    return shared_exposure_ev
 
 
-def generate_comparison(*, baseline_run: Path, exposure_run: Path, relight_run: Path, output: Path) -> dict[str, Any]:
+def generate_comparison(
+    *,
+    baseline_run: Path,
+    exposure_run: Path,
+    relight_run: Path,
+    output: Path,
+    experiment_label: str = "PAN-31",
+) -> dict[str, Any]:
     output = output.expanduser().resolve()
     sidecar = output.with_suffix(".json")
     commit = output.with_suffix(".commit.json")
@@ -239,7 +282,14 @@ def generate_comparison(*, baseline_run: Path, exposure_run: Path, relight_run: 
         name: _load_replay(name, label, run)
         for (name, label), run in zip(VARIANTS, (baseline_run, exposure_run, relight_run))
     }
-    _validate_control(evidence)
+    shared_exposure_ev = _validate_control(evidence)
+    ev_label = f"+{shared_exposure_ev:g} EV"
+    labels = {
+        "baseline": "A · PAN-30 baseline",
+        "exposure": f"B · derived exposure only · {ev_label}",
+        "relight": f"C · same {ev_label} · UE5 ambient fill",
+    }
+    evidence = {name: replace(item, label=labels[name]) for name, item in evidence.items()}
 
     column_width = 690
     label_width = 180
@@ -251,9 +301,10 @@ def generate_comparison(*, baseline_run: Path, exposure_run: Path, relight_run: 
     height = header_height + row_height * len(OBSERVATION_IDS) + footer_height
     canvas = Image.new("RGB", (width, height), BACKGROUND)
     draw = ImageDraw.Draw(canvas)
-    draw.text((margin, 24), "PAN-31 · Controlled UE5 lighting ablation", font=_font(40, bold=True), fill=TEXT)
+    draw.text((margin, 24), f"{experiment_label} · Controlled UE5 lighting ablation", font=_font(40, bold=True), fill=TEXT)
     draw.text((margin, 78), "Same PAN-30 observation ID · pose · source timestamp · geometry; Planner unchanged", font=_font(24), fill=MUTED)
-    for column, (name, label) in enumerate(VARIANTS):
+    for column, (name, _) in enumerate(VARIANTS):
+        label = labels[name]
         x = margin + label_width + column * column_width
         draw.text((x + 12, 116), label, font=_font(21, bold=True), fill=ACCENTS[name])
 
@@ -281,7 +332,8 @@ def generate_comparison(*, baseline_run: Path, exposure_run: Path, relight_run: 
 
     summary_top = header_height + row_height * len(OBSERVATION_IDS) + 24
     aggregate: dict[str, dict[str, float]] = {}
-    for column, (name, label) in enumerate(VARIANTS):
+    for column, (name, _) in enumerate(VARIANTS):
+        label = labels[name]
         rows = evidence[name].stats.values()
         aggregate[name] = {
             "mean_geometry_black_fraction_luma_le_0_05": float(np.mean([row["geometry_black_fraction_luma_le_0_05"] for row in rows])),
@@ -308,6 +360,8 @@ def generate_comparison(*, baseline_run: Path, exposure_run: Path, relight_run: 
         payload = {
             "schema_version": "pan31.ue5-lighting-comparison.v1",
             "result": "PASS",
+            "experiment_label": experiment_label,
+            "shared_exposure_transform_ev": shared_exposure_ev,
             "observation_ids": list(OBSERVATION_IDS),
             "control": {
                 "same_observation_id_pose_source_timestamp": True,
@@ -359,12 +413,14 @@ def main() -> None:
     parser.add_argument("--exposure-run", type=Path, required=True)
     parser.add_argument("--relight-run", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--experiment-label", default="PAN-31")
     args = parser.parse_args()
     result = generate_comparison(
         baseline_run=args.baseline_run,
         exposure_run=args.exposure_run,
         relight_run=args.relight_run,
         output=args.output,
+        experiment_label=args.experiment_label,
     )
     print(json.dumps({"result": result["result"], "preview": result["preview"]}, sort_keys=True))
 
