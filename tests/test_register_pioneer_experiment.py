@@ -463,6 +463,107 @@ class RegisterPioneerExperimentTests(unittest.TestCase):
             )
             self.assertEqual(missing_occupancy_counter["status"], "UNKNOWN")
 
+    def test_pan30_requires_hash_bound_low_altitude_policy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            registry_json, registry_md, run_dir, online = self._fixture(temporary)
+            config_path = run_dir / "config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["experiment_budget_observations"] = 50
+            _write_json(config_path, config)
+            profile = run_dir / "pioneer-low-altitude-50.json"
+            _write_json(profile, {"name": "pioneer-low-altitude-50"})
+            policy = run_dir / "flight_policies" / "hkust_low_altitude.json"
+            _write_json(policy, {"hard_ceiling_agl_m": 120.0})
+            (run_dir / "manifest.txt").write_text(
+                "\n".join(
+                    (
+                        "planner=pioneer",
+                        "observation_mode=cubemap6",
+                        "scene=eiffel",
+                        "config=config.json",
+                        "config_snapshot=config.json",
+                        f"config_sha256={hashlib.sha256(config_path.read_bytes()).hexdigest()}",
+                        "debug_profile=pioneer-low-altitude-50",
+                        "debug_profile_snapshot=pioneer-low-altitude-50.json",
+                        f"debug_profile_sha256={hashlib.sha256(profile.read_bytes()).hexdigest()}",
+                        "position_policy_snapshot=flight_policies/hkust_low_altitude.json",
+                        f"position_policy_sha256={hashlib.sha256(policy.read_bytes()).hexdigest()}",
+                        "runtime_snapshot_integrity_contract=pre-and-post-v1",
+                        f"git_commit={BASE_COMMIT}",
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            metrics = json.loads(online.read_text(encoding="utf-8"))
+            metrics["run"].update(
+                {
+                    "budget_observations": 50,
+                    "debug_profile": "pioneer-low-altitude-50",
+                    "pioneer_planner_state_mode": "position_only",
+                    "planner_state_dimension": 3,
+                    "pioneer_cubemap_rig_frame": "world",
+                    "pioneer_cubemap_extrinsics_version": "pytorch3d-world-axes-v1",
+                    "pioneer_canonical_orientation_indices": [2, 0],
+                    "pioneer_filter_occupied_position_candidates": True,
+                    "validation_require_complete_occupied_pose": True,
+                    "validation_position_policy": {
+                        "hard_ceiling_agl_m": 120.0,
+                        "start_agl_m": 4.9,
+                        "verified_free_position_count": 63,
+                        "source_policy_sha256": hashlib.sha256(
+                            policy.read_bytes()
+                        ).hexdigest(),
+                    },
+                }
+            )
+            totals = {
+                "parent_beam_count": 4,
+                "raw_action_proposal_count": 24,
+                "translation_action_proposal_count": 24,
+                "orientation_action_proposal_count": 0,
+                "generated_candidate_count": 20,
+                "valid_state_candidate_count": 12,
+                "observed_rejected_candidate_count": 2,
+                "occupied_rejected_candidate_count": 6,
+                "collision_rejected_candidate_count": 3,
+                "rendered_candidate_count": 9,
+                "retained_beam_count": 6,
+                "search_seconds": 0.75,
+            }
+            metrics["planner_search"] = {
+                "state_mode": "position_only",
+                "state_dimension": 3,
+                "cubemap_rig_frame": "world",
+                "cubemap_extrinsics_version": "pytorch3d-world-axes-v1",
+                "totals": totals,
+            }
+            _write_json(online, metrics)
+            record = register_experiment(
+                registry_json=registry_json,
+                registry_md=registry_md,
+                run_dir=run_dir,
+                online_metrics=online,
+                experiment_id="PAN-30-PIONEER-HKUST-LOWALT-50OBS",
+                scientific_run_commit=BASE_COMMIT,
+                final_branch_commit=FINAL_COMMIT,
+                status="PASS",
+                issue="PAN-30",
+            )
+            self.assertEqual(record["status"], "PASS")
+            self.assertTrue(record["pioneer"]["pan30_contract_verified"])
+            self.assertEqual(
+                record["pioneer"]["validation_position_policy"][
+                    "hard_ceiling_agl_m"
+                ],
+                120.0,
+            )
+            self.assertTrue(
+                record["provenance"]["provenance_checks"][
+                    "position_policy_snapshot_hash"
+                ]
+            )
+
     def test_pan11_da3_pass_requires_all_six_rgb_only_face_provenance_rows(self):
         with tempfile.TemporaryDirectory() as temporary:
             registry_json, registry_md, run_dir, online = self._fixture(temporary)

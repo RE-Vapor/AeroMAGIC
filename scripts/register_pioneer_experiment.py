@@ -22,7 +22,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 LIVE_START = "<!-- PIONEER_LIVE_SECTION_START -->"
 LIVE_END = "<!-- PIONEER_LIVE_SECTION_END -->"
-SUPPORTED_ISSUES = ("PAN-10", "PAN-11")
+SUPPORTED_ISSUES = ("PAN-10", "PAN-11", "PAN-30")
 PASS_STATUSES = {"PASS", "SUCCESS", "COMPLETED"}
 FAIL_STATUSES = {"FAIL", "FAILED", "RUNTIME_FAIL", "SCIENTIFIC_FAIL"}
 BUNDLE_TRANSACTION_VERSION = "pioneer-bundle-commit-v1"
@@ -490,6 +490,22 @@ def build_record(
         and re.fullmatch(r"[0-9a-f]{64}", manifest_profile_sha)
         and _file_sha256(profile_snapshot) == manifest_profile_sha
     )
+    position_policy_ref = manifest.get("position_policy_snapshot")
+    position_policy_snapshot = (
+        run_dir / position_policy_ref
+        if isinstance(position_policy_ref, str)
+        and re.fullmatch(r"[A-Za-z0-9._/-]+", position_policy_ref)
+        and not Path(position_policy_ref).is_absolute()
+        and ".." not in Path(position_policy_ref).parts
+        else run_dir / "flight_policy.json"
+    )
+    manifest_position_policy_sha = manifest.get("position_policy_sha256")
+    position_policy_snapshot_verified = bool(
+        position_policy_snapshot.is_file()
+        and isinstance(manifest_position_policy_sha, str)
+        and re.fullmatch(r"[0-9a-f]{64}", manifest_position_policy_sha)
+        and _file_sha256(position_policy_snapshot) == manifest_position_policy_sha
+    )
     macarons_params_ref = manifest.get("macarons_params_snapshot")
     macarons_params_snapshot = (
         run_dir / macarons_params_ref
@@ -719,6 +735,16 @@ def build_record(
             ("validation_require_complete_occupied_pose",),
         )
     )
+    position_policy_value = _pick(
+        sources,
+        ("run", "validation_position_policy"),
+        ("validation_position_policy",),
+    )
+    position_policy = (
+        dict(position_policy_value)
+        if isinstance(position_policy_value, Mapping)
+        else {}
+    )
     planner_search = (
         metrics.get("planner_search")
         if isinstance(metrics.get("planner_search"), Mapping)
@@ -792,8 +818,8 @@ def build_record(
         == planner_search_totals["collision_rejected_candidate_count"]
         + planner_search_totals["rendered_candidate_count"]
     )
-    pan11_contract_verified = bool(
-        issue == "PAN-11"
+    position_planner_contract_verified = bool(
+        issue in {"PAN-11", "PAN-30"}
         and expected_state_dimension is not None
         and planner_state_dimension == expected_state_dimension
         and cubemap_rig_frame == expected_rig_frame
@@ -828,10 +854,32 @@ def build_record(
             else orientation_proposals is not None and orientation_proposals > 0
         )
     )
-    if issue == "PAN-11" and effective_status == "PASS" and not pan11_contract_verified:
+    pan30_low_altitude_contract_verified = bool(
+        issue == "PAN-30"
+        and position_planner_contract_verified
+        and debug_profile == "pioneer-low-altitude-50"
+        and budget == 50
+        and position_policy_snapshot_verified
+        and position_policy.get("source_policy_sha256")
+        == manifest_position_policy_sha
+        and _as_float(position_policy.get("hard_ceiling_agl_m")) == 120.0
+        and _as_float(position_policy.get("start_agl_m")) is not None
+        and _as_float(position_policy.get("start_agl_m")) <= 10.0
+        and _as_int(position_policy.get("verified_free_position_count")) == 63
+    )
+    issue_contract_verified = (
+        pan30_low_altitude_contract_verified
+        if issue == "PAN-30"
+        else position_planner_contract_verified
+    )
+    if (
+        issue in {"PAN-11", "PAN-30"}
+        and effective_status == "PASS"
+        and not issue_contract_verified
+    ):
         effective_status = "UNKNOWN"
         completion_verified = False
-        status_reason = "PAN-11 planner-state/search telemetry contract is incomplete."
+        status_reason = f"{issue} planner-state/search telemetry contract is incomplete."
 
     metrics_run = metrics.get("run") if isinstance(metrics.get("run"), Mapping) else {}
     da3_model_id = metrics_run.get("da3_model_id")
@@ -1194,7 +1242,7 @@ def build_record(
                 "scene_texture_tree_sha256": manifest_texture_tree_sha,
             }
         )
-    if issue == "PAN-11":
+    if issue in {"PAN-11", "PAN-30"}:
         normalized_config.update(
             {
                 "pioneer_planner_state_mode": planner_state_mode,
@@ -1207,6 +1255,14 @@ def build_record(
                 ),
                 "validation_require_complete_occupied_pose": (
                     require_complete_occupied_pose
+                ),
+                **(
+                    {
+                        "validation_position_policy": position_policy,
+                        "position_policy_sha256": manifest_position_policy_sha,
+                    }
+                    if issue == "PAN-30"
+                    else {}
                 ),
             }
         )
@@ -1221,16 +1277,21 @@ def build_record(
         "artifact_hash_set": artifact_count > 0,
         "completion_status_evidence": completion_verified,
         "run_commit_matches_manifest": (
-            run_commit_verified if depth_source == "DA3" else True
+            run_commit_verified if depth_source == "DA3" or issue == "PAN-30" else True
         ),
         "runtime_snapshot_integrity": (
-            runtime_snapshot_integrity_verified if depth_source == "DA3" else True
+            runtime_snapshot_integrity_verified
+            if depth_source == "DA3" or issue == "PAN-30"
+            else True
         ),
         "config_snapshot_hash": (
-            config_snapshot_verified if depth_source == "DA3" else True
+            config_snapshot_verified if depth_source == "DA3" or issue == "PAN-30" else True
         ),
         "debug_profile_snapshot_hash": (
-            profile_snapshot_verified if depth_source == "DA3" else True
+            profile_snapshot_verified if depth_source == "DA3" or issue == "PAN-30" else True
+        ),
+        "position_policy_snapshot_hash": (
+            position_policy_snapshot_verified if issue == "PAN-30" else True
         ),
         "macarons_params_snapshot_hash": (
             macarons_params_snapshot_verified if depth_source == "DA3" else True
@@ -1293,8 +1354,8 @@ def build_record(
         else f"No PASS claim: {status_reason}."
     )
     notes = "Debug-only coverage is not comparable." if coverage_comparable is False else None
-    if issue == "PAN-11":
-        notes = "Issue provenance: PAN-11." + (f" {notes}" if notes else "")
+    if issue in {"PAN-11", "PAN-30"}:
+        notes = f"Issue provenance: {issue}." + (f" {notes}" if notes else "")
     now = datetime.now(timezone.utc)
     return {
         "experiment_id": experiment_id,
@@ -1336,7 +1397,7 @@ def build_record(
                         require_complete_occupied_pose
                     ),
                 }
-                if issue == "PAN-11"
+                if issue in {"PAN-11", "PAN-30"}
                 else {}
             ),
         },
@@ -1429,9 +1490,19 @@ def build_record(
                         ),
                         "totals": planner_search_totals,
                     },
-                    "pan11_contract_verified": pan11_contract_verified,
+                    **(
+                        {
+                            "pan11_contract_verified": position_planner_contract_verified
+                        }
+                        if issue == "PAN-11"
+                        else {
+                            "pan30_contract_verified": pan30_low_altitude_contract_verified,
+                            "validation_position_policy": position_policy,
+                            "position_policy_sha256": manifest_position_policy_sha,
+                        }
+                    ),
                 }
-                if issue == "PAN-11"
+                if issue in {"PAN-11", "PAN-30"}
                 else {}
             ),
             "coverage": {
@@ -1445,7 +1516,7 @@ def build_record(
             "cubemap6_metrics_verified": cubemap6_metrics_verified,
         },
         "provenance": {
-            **({"issue": issue} if issue == "PAN-11" else {}),
+            **({"issue": issue} if issue in {"PAN-11", "PAN-30"} else {}),
             "scientific_run_commit": scientific_run_commit or None,
             "scientific_run_commit_full": scientific_full,
             "scientific_run_commit_resolution": "user_supplied_not_resolved",
