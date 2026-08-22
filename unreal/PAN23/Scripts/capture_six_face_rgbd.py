@@ -186,7 +186,7 @@ def _lighting_snapshot(directional, skylight):
             "rotation_degrees": rot(directional.get_actor_rotation()),
             "intensity": _component_float(directional_component, "intensity"),
             "source_angle_degrees": _component_float(
-                directional_component, "source_angle"
+                directional_component, "light_source_angle"
             ),
             "cast_shadows": bool(
                 directional_component.get_editor_property("cast_shadows")
@@ -245,7 +245,7 @@ def apply_lighting_ablation(actors, config):
             source_angle = float(directional_override["source_angle_degrees"])
             if not math.isfinite(source_angle) or not 0.0 <= source_angle <= 10.0:
                 raise RuntimeError("PAN-31 source angle must be finite in [0,10]")
-            directional_component.set_editor_property("source_angle", source_angle)
+            directional_component.set_editor_property("light_source_angle", source_angle)
 
     skylight_override = spec.get("sky_light")
     if skylight_override is not None:
