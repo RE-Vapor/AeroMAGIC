@@ -295,6 +295,31 @@ def _validated_linear_rgb(value, label):
     return result
 
 
+def resolve_rgb_render_mode(config):
+    """Resolve the public RGB render contract without changing legacy captures."""
+
+    spec = config.get("rgb_render_mode")
+    if spec is None:
+        return (
+            {
+                "mode": "lit_final_color",
+                "capture_source": "SCS_FINAL_COLOR_LDR",
+                "lighting_dependency": "scene_lighting",
+            },
+            unreal.SceneCaptureSource.SCS_FINAL_COLOR_LDR,
+        )
+    expected = {
+        "mode": "material_base_color",
+        "capture_source": "SCS_BASE_COLOR",
+        "lighting_dependency": "none_unlit_diagnostic",
+    }
+    if spec != expected:
+        raise RuntimeError("PAN-35 rgb_render_mode contract is unsupported")
+    if config.get("lighting_ablation") is not None:
+        raise RuntimeError("PAN-35 base-color diagnostic cannot apply lighting overrides")
+    return dict(expected), unreal.SceneCaptureSource.SCS_BASE_COLOR
+
+
 def apply_lighting_ablation(world, actors, config):
     """Apply one transient PAN-31 lighting variant without saving the level."""
 
@@ -673,6 +698,7 @@ def main():
             raise RuntimeError("WorldToMeters does not match capture config")
         actors = actor_subsystem.get_all_level_actors()
         lighting_report = apply_lighting_ablation(world, actors, config)
+        rgb_render_mode, rgb_capture_source = resolve_rgb_render_mode(config)
         root, captures, rig_source = resolve_rig(
             actor_subsystem, actors, request, config
         )
@@ -755,7 +781,7 @@ def main():
             )
             component.set_editor_property("texture_target", rgb_target)
             component.set_editor_property(
-                "capture_source", unreal.SceneCaptureSource.SCS_FINAL_COLOR_LDR
+                "capture_source", rgb_capture_source
             )
             global_illumination = lighting_report.get("global_illumination")
             warmup_count = (
@@ -930,6 +956,8 @@ def main():
                         else None
                     ),
                     "capture_exposure": exposure_report,
+                    "rgb_capture_source": rgb_render_mode["capture_source"],
+                    "rgb_render_mode": rgb_render_mode["mode"],
                     "rgb_global_illumination_warmup": {
                         "capture_count": warmup_count,
                         "seconds": warmup_seconds,
@@ -1001,6 +1029,7 @@ def main():
             },
             "lighting_preset": config["lighting_preset"],
             "lighting_ablation": lighting_report,
+            "rgb_render_mode": rgb_render_mode,
             "console_variables": config["console_variables"],
             "faces": face_reports,
             "timings_seconds": {

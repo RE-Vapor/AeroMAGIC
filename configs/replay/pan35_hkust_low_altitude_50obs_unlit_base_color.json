@@ -1,0 +1,16 @@
+{
+  "schema_version": "pioneer.ue5-postrun-replay-source.v1",
+  "task": "PAN-35",
+  "source_run": "/home/ubuntu/Projects/Pioneer/experiments/runs/integration-all-experiments/PAN-30-pioneer-hkust-position-only-low-altitude-50obs/attempt-002",
+  "source_metrics": "/home/ubuntu/Projects/Pioneer/experiments/runs/integration-all-experiments/PAN-30-pioneer-hkust-position-only-low-altitude-50obs/attempt-002/metrics_debug_pioneer_lowalt50/pioneer_HKUST_0.online.json",
+  "source_capture": "/home/ubuntu/Projects/Pioneer/experiments/inputs/shared/data/Macarons++/HKUST/pan30_pioneer_hkust_position_only_lowalt_50obs_a2_memory_debug_pioneer_lowalt50/training/0",
+  "source_lmdb": "/home/ubuntu/Projects/Pioneer/repository/results/scene_exploration/pan30_pioneer_hkust_position_only_lowalt_50obs_a2_lmdb_debug_pioneer_lowalt50",
+  "source_preview": "/home/ubuntu/Projects/Pioneer/experiments/runs/integration-all-experiments/PAN-30-pioneer-hkust-position-only-low-altitude-50obs/attempt-002/hkust_position_only_lowalt50_source_preview.png",
+  "source_registry_id": "PAN-30-PIONEER-HKUST-POSITION-ONLY-LOW-ALTITUDE-50OBS-20260822",
+  "source_config": "/home/ubuntu/Projects/Pioneer/repository/configs/test/test_pioneer_hkust_pan30_position_only_low_altitude_50obs_a2_config.json",
+  "observation_ids": [0, 12, 24, 36, 49],
+  "replay_request_prefix": "pan35-hkust-unlit-base-color",
+  "preview_filename": "hkust_pan35_unlit_base_color_preview.png",
+  "capture_config_repo_relative": "unreal/PAN35/Config/pan35_hkust_unlit_base_color.json",
+  "lighting_variant_id": "unlit_material_base_color_v1"
+}
