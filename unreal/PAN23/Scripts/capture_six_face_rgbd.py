@@ -202,6 +202,10 @@ def _component_float(component, property_name):
     return float(component.get_editor_property(property_name))
 
 
+def _linear_color_values(color):
+    return [float(color.r), float(color.g), float(color.b)]
+
+
 def _lighting_snapshot(directional, skylight):
     directional_component = directional.get_component_by_class(
         unreal.DirectionalLightComponent
@@ -220,6 +224,9 @@ def _lighting_snapshot(directional, skylight):
             "cast_shadows": bool(
                 directional_component.get_editor_property("cast_shadows")
             ),
+            "indirect_lighting_intensity": _component_float(
+                directional_component, "indirect_lighting_intensity"
+            ),
         },
         "sky_light": {
             "actor_label": skylight.get_actor_label(),
@@ -228,6 +235,17 @@ def _lighting_snapshot(directional, skylight):
             ),
             "real_time_capture": bool(
                 skylight_component.get_editor_property("real_time_capture")
+            ),
+            "indirect_lighting_intensity": _component_float(
+                skylight_component, "indirect_lighting_intensity"
+            ),
+            "lower_hemisphere_is_solid_color": bool(
+                skylight_component.get_editor_property(
+                    "lower_hemisphere_is_solid_color"
+                )
+            ),
+            "lower_hemisphere_color_linear": _linear_color_values(
+                skylight_component.get_editor_property("lower_hemisphere_color")
             ),
         },
     }
@@ -246,6 +264,35 @@ def _exposure_cvars():
             )
         ),
     }
+
+
+def _global_illumination_cvars():
+    return {
+        "r.DynamicGlobalIlluminationMethod": int(
+            unreal.SystemLibrary.get_console_variable_int_value(
+                "r.DynamicGlobalIlluminationMethod"
+            )
+        ),
+        "r.Lumen.DiffuseIndirect.Allow": int(
+            unreal.SystemLibrary.get_console_variable_int_value(
+                "r.Lumen.DiffuseIndirect.Allow"
+            )
+        ),
+        "r.Lumen.Reflections.Allow": int(
+            unreal.SystemLibrary.get_console_variable_int_value(
+                "r.Lumen.Reflections.Allow"
+            )
+        ),
+    }
+
+
+def _validated_linear_rgb(value, label):
+    if not isinstance(value, list) or len(value) != 3:
+        raise RuntimeError(f"{label} must be a three-element array")
+    result = [float(channel) for channel in value]
+    if any(not math.isfinite(channel) or not 0.0 <= channel <= 1.0 for channel in result):
+        raise RuntimeError(f"{label} channels must be finite in [0,1]")
+    return result
 
 
 def apply_lighting_ablation(world, actors, config):
@@ -313,6 +360,62 @@ def apply_lighting_ablation(world, actors, config):
     }:
         raise RuntimeError("PAN-31 could not enable the manual exposure pipeline")
 
+    global_illumination_spec = spec.get("global_illumination")
+    global_illumination = None
+    gi_cvars_before = _global_illumination_cvars()
+    if global_illumination_spec is not None:
+        if (
+            not isinstance(global_illumination_spec, dict)
+            or global_illumination_spec.get("method") != "lumen"
+        ):
+            raise RuntimeError("PAN-34 global illumination method must be lumen")
+        indirect_intensity = float(
+            global_illumination_spec.get("indirect_lighting_intensity", -1.0)
+        )
+        final_gather_quality = float(
+            global_illumination_spec.get("lumen_final_gather_quality", -1.0)
+        )
+        skylight_leaking = float(
+            global_illumination_spec.get("lumen_skylight_leaking", -1.0)
+        )
+        warmup_count = global_illumination_spec.get("scene_capture_warmup_count")
+        if not math.isfinite(indirect_intensity) or not 0.0 < indirect_intensity <= 4.0:
+            raise RuntimeError("PAN-34 indirect lighting intensity must be in (0,4]")
+        if not math.isfinite(final_gather_quality) or not 0.25 <= final_gather_quality <= 2.0:
+            raise RuntimeError("PAN-34 Lumen final gather quality must be in [0.25,2]")
+        if not math.isfinite(skylight_leaking) or not 0.0 <= skylight_leaking <= 1.0:
+            raise RuntimeError("PAN-34 Lumen skylight leaking must be in [0,1]")
+        if type(warmup_count) is not int or not 1 <= warmup_count <= 8:
+            raise RuntimeError("PAN-34 scene capture warmup count must be in [1,8]")
+        indirect_color = _validated_linear_rgb(
+            global_illumination_spec.get("indirect_lighting_color_linear"),
+            "PAN-34 indirect lighting color",
+        )
+        unreal.SystemLibrary.execute_console_command(
+            world, "r.DynamicGlobalIlluminationMethod 1"
+        )
+        unreal.SystemLibrary.execute_console_command(
+            world, "r.Lumen.DiffuseIndirect.Allow 1"
+        )
+        unreal.SystemLibrary.execute_console_command(
+            world, "r.Lumen.Reflections.Allow 0"
+        )
+        global_illumination = {
+            "method": "lumen",
+            "indirect_lighting_intensity": indirect_intensity,
+            "indirect_lighting_color_linear": indirect_color,
+            "lumen_final_gather_quality": final_gather_quality,
+            "lumen_skylight_leaking": skylight_leaking,
+            "scene_capture_warmup_count": warmup_count,
+        }
+    gi_cvars_after = _global_illumination_cvars()
+    if global_illumination is not None and gi_cvars_after != {
+        "r.DynamicGlobalIlluminationMethod": 1,
+        "r.Lumen.DiffuseIndirect.Allow": 1,
+        "r.Lumen.Reflections.Allow": 0,
+    }:
+        raise RuntimeError("PAN-34 could not enable the requested Lumen diffuse GI")
+
     directional_override = spec.get("directional_light")
     if directional_override is not None:
         if not isinstance(directional_override, dict):
@@ -330,6 +433,15 @@ def apply_lighting_ablation(world, actors, config):
             if not math.isfinite(source_angle) or not 0.0 <= source_angle <= 10.0:
                 raise RuntimeError("PAN-31 source angle must be finite in [0,10]")
             directional_component.set_editor_property("light_source_angle", source_angle)
+        if "indirect_lighting_intensity" in directional_override:
+            indirect = float(directional_override["indirect_lighting_intensity"])
+            if not math.isfinite(indirect) or not 0.0 <= indirect <= 8.0:
+                raise RuntimeError(
+                    "PAN-34 directional indirect intensity must be in [0,8]"
+                )
+            directional_component.set_editor_property(
+                "indirect_lighting_intensity", indirect
+            )
 
     skylight_override = spec.get("sky_light")
     if skylight_override is not None:
@@ -341,6 +453,31 @@ def apply_lighting_ablation(world, actors, config):
             if not math.isfinite(intensity_scale) or intensity_scale < 0.0:
                 raise RuntimeError("PAN-31 sky intensity must be non-negative")
             skylight_component.set_editor_property("intensity", intensity_scale)
+        if "indirect_lighting_intensity" in skylight_override:
+            indirect = float(skylight_override["indirect_lighting_intensity"])
+            if not math.isfinite(indirect) or not 0.0 <= indirect <= 8.0:
+                raise RuntimeError("PAN-34 sky indirect intensity must be in [0,8]")
+            skylight_component.set_editor_property(
+                "indirect_lighting_intensity", indirect
+            )
+        if "lower_hemisphere_is_solid_color" in skylight_override:
+            solid = skylight_override["lower_hemisphere_is_solid_color"]
+            if type(solid) is not bool:
+                raise RuntimeError(
+                    "PAN-34 lower hemisphere solid-color flag must be boolean"
+                )
+            skylight_component.set_editor_property(
+                "lower_hemisphere_is_solid_color", solid
+            )
+        if "lower_hemisphere_color_linear" in skylight_override:
+            color = _validated_linear_rgb(
+                skylight_override["lower_hemisphere_color_linear"],
+                "PAN-34 lower hemisphere color",
+            )
+            skylight_component.set_editor_property(
+                "lower_hemisphere_color",
+                unreal.LinearColor(color[0], color[1], color[2], 1.0),
+            )
         if bool(skylight_override.get("recapture_scene", False)):
             skylight_component.set_mobility(unreal.ComponentMobility.MOVABLE)
             skylight_component.set_editor_property("real_time_capture", True)
@@ -356,6 +493,9 @@ def apply_lighting_ablation(world, actors, config):
         "manual_exposure_pipeline_enabled": enable_manual_pipeline,
         "exposure_cvars_before": exposure_cvars_before,
         "exposure_cvars_after": exposure_cvars_after,
+        "global_illumination": global_illumination,
+        "global_illumination_cvars_before": gi_cvars_before,
+        "global_illumination_cvars_after": gi_cvars_after,
         "before": before,
         "after": _lighting_snapshot(directional, skylight),
     }
@@ -363,7 +503,11 @@ def apply_lighting_ablation(world, actors, config):
 
 def apply_capture_exposure(component, lighting_report):
     compensation = float(lighting_report["capture_exposure_compensation_ev"])
-    if lighting_report["applied"] is not True or compensation == 0.0:
+    global_illumination = lighting_report.get("global_illumination")
+    if (
+        lighting_report["applied"] is not True
+        or (compensation == 0.0 and global_illumination is None)
+    ):
         return {
             "manual_auto_exposure_disabled_by_project": True,
             "auto_exposure_bias_override": False,
@@ -371,26 +515,59 @@ def apply_capture_exposure(component, lighting_report):
             "post_process_blend_weight": 0.0,
         }
     settings = component.get_editor_property("post_process_settings")
-    settings.set_editor_property("override_auto_exposure_method", True)
-    settings.set_editor_property(
-        "auto_exposure_method", unreal.AutoExposureMethod.AEM_MANUAL
-    )
-    settings.set_editor_property(
-        "override_auto_exposure_apply_physical_camera_exposure", True
-    )
-    settings.set_editor_property(
-        "auto_exposure_apply_physical_camera_exposure", False
-    )
-    settings.set_editor_property("override_auto_exposure_bias", True)
-    settings.set_editor_property("auto_exposure_bias", compensation)
+    if compensation != 0.0:
+        settings.set_editor_property("override_auto_exposure_method", True)
+        settings.set_editor_property(
+            "auto_exposure_method", unreal.AutoExposureMethod.AEM_MANUAL
+        )
+        settings.set_editor_property(
+            "override_auto_exposure_apply_physical_camera_exposure", True
+        )
+        settings.set_editor_property(
+            "auto_exposure_apply_physical_camera_exposure", False
+        )
+        settings.set_editor_property("override_auto_exposure_bias", True)
+        settings.set_editor_property("auto_exposure_bias", compensation)
+    if global_illumination is not None:
+        color = global_illumination["indirect_lighting_color_linear"]
+        settings.set_editor_property("override_dynamic_global_illumination_method", True)
+        settings.set_editor_property(
+            "dynamic_global_illumination_method",
+            unreal.DynamicGlobalIlluminationMethod.LUMEN,
+        )
+        settings.set_editor_property("override_indirect_lighting_intensity", True)
+        settings.set_editor_property(
+            "indirect_lighting_intensity",
+            global_illumination["indirect_lighting_intensity"],
+        )
+        settings.set_editor_property("override_indirect_lighting_color", True)
+        settings.set_editor_property(
+            "indirect_lighting_color",
+            unreal.LinearColor(color[0], color[1], color[2], 1.0),
+        )
+        settings.set_editor_property("override_lumen_final_gather_quality", True)
+        settings.set_editor_property(
+            "lumen_final_gather_quality",
+            global_illumination["lumen_final_gather_quality"],
+        )
+        settings.set_editor_property("override_lumen_skylight_leaking", True)
+        settings.set_editor_property(
+            "lumen_skylight_leaking",
+            global_illumination["lumen_skylight_leaking"],
+        )
+        component.set_editor_property("always_persist_rendering_state", True)
     component.set_editor_property("post_process_settings", settings)
     component.set_editor_property("post_process_blend_weight", 1.0)
     return {
         "manual_auto_exposure_disabled_by_project": True,
-        "auto_exposure_method_override": "AEM_MANUAL",
+        "auto_exposure_method_override": (
+            "AEM_MANUAL" if compensation != 0.0 else None
+        ),
         "physical_camera_exposure_enabled": False,
-        "auto_exposure_bias_override": True,
+        "auto_exposure_bias_override": compensation != 0.0,
         "exposure_compensation_ev": compensation,
+        "global_illumination": global_illumination,
+        "always_persist_rendering_state": global_illumination is not None,
         "post_process_blend_weight": 1.0,
     }
 
@@ -580,6 +757,16 @@ def main():
             component.set_editor_property(
                 "capture_source", unreal.SceneCaptureSource.SCS_FINAL_COLOR_LDR
             )
+            global_illumination = lighting_report.get("global_illumination")
+            warmup_count = (
+                int(global_illumination["scene_capture_warmup_count"])
+                if global_illumination is not None
+                else 0
+            )
+            warmup_started = time.perf_counter()
+            for _ in range(warmup_count):
+                component.capture_scene()
+            warmup_seconds = time.perf_counter() - warmup_started
             capture_started = time.perf_counter()
             component.capture_scene()
             rgb_capture_seconds = time.perf_counter() - capture_started
@@ -743,6 +930,10 @@ def main():
                         else None
                     ),
                     "capture_exposure": exposure_report,
+                    "rgb_global_illumination_warmup": {
+                        "capture_count": warmup_count,
+                        "seconds": warmup_seconds,
+                    },
                     "rgb_post_read_exposure_transform": rgb_transform_report,
                     "rgb_uint8": {
                         **asset(rgb_raw, temporary),

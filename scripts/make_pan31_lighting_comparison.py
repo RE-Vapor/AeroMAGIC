@@ -103,12 +103,22 @@ def _mask_erp(canonical_root: Path) -> np.ndarray:
         if valid.shape != (256, 256) or valid.dtype != np.bool_:
             raise ValueError(f"unexpected valid mask: {mask_path}")
         rgb = np.repeat(valid[..., None].astype(np.uint8) * 255, 3, axis=2)
+        contract_transform = np.asarray(
+            row["T_world_from_cam"], dtype=np.float64
+        )
+        contract_to_pioneer = np.asarray(
+            [[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]],
+            dtype=np.float64,
+        )
+        pioneer_transform = np.eye(4, dtype=np.float64)
+        pioneer_transform[:3, :3] = contract_to_pioneer @ contract_transform[:3, :3]
+        pioneer_transform[:3, 3] = contract_to_pioneer @ contract_transform[:3, 3]
         faces.append(
             SimpleNamespace(
                 rgb_uint8=rgb,
                 image_size=(256, 256),
                 K_pixel=np.asarray(row["K_pixel"], dtype=np.float64),
-                T_world_from_cam=np.asarray(row["T_world_from_cam"], dtype=np.float64),
+                T_world_from_cam=pioneer_transform,
             )
         )
     return cubemap_rgb_to_equirectangular(SimpleNamespace(faces=faces), output_height=512)[..., 0] > 127
