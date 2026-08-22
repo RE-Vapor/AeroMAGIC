@@ -792,8 +792,13 @@ def build_record(
     occupied_rejections = _as_int(
         planner_search_totals.get("occupied_rejected_candidate_count")
     )
+    bound_rejections = _as_int(
+        planner_search_totals.get("validation_bound_rejected_candidate_count")
+    )
     if filter_occupied_position_candidates is True:
         required_search_count_fields += ("occupied_rejected_candidate_count",)
+    if issue == "PAN-30":
+        required_search_count_fields += ("validation_bound_rejected_candidate_count",)
     search_counts_verified = all(
         type(planner_search_totals.get(field)) is int
         and planner_search_totals[field] >= 0
@@ -808,12 +813,14 @@ def build_record(
     effective_occupied_rejections = (
         occupied_rejections if occupied_rejections is not None else 0
     )
+    effective_bound_rejections = bound_rejections if bound_rejections is not None else 0
     search_closure_verified = bool(
         search_counts_verified
         and planner_search_totals["generated_candidate_count"]
         == planner_search_totals["valid_state_candidate_count"]
         + planner_search_totals["observed_rejected_candidate_count"]
         + effective_occupied_rejections
+        + effective_bound_rejections
         and planner_search_totals["valid_state_candidate_count"]
         == planner_search_totals["collision_rejected_candidate_count"]
         + planner_search_totals["rendered_candidate_count"]
