@@ -1,0 +1,37 @@
+{
+  "schema_version": "pan29.ue5-replay-rig.v1",
+  "engine_association": "5.4",
+  "level_path": "/Game/PAN13_Derived/HKUST_ZUp_QA",
+  "face_names": ["front", "back", "left", "right", "up", "down"],
+  "face_resolution": 256,
+  "fov_degrees": 90.0,
+  "near_m": 0.1,
+  "far_m": 1000.0,
+  "world_to_meters": 100.0,
+  "scene_units_per_meter": 0.2,
+  "gpu_index": 1,
+  "rhi": "Vulkan",
+  "rig_frame": "pioneer-world-axes",
+  "extrinsics_version": "pan29-pioneer-world-axes-ue5-v1",
+  "faces": [
+    {"face_name": "front", "rotation_degrees": [0.0, 90.0, 0.0], "expected_forward_ue": [0.0, 1.0, 0.0], "expected_T_pioneer_world_from_cam_rotation": [[-1, 0, 0], [0, -1, 0], [0, 0, 1]]},
+    {"face_name": "back", "rotation_degrees": [0.0, -90.0, 0.0], "expected_forward_ue": [0.0, -1.0, 0.0], "expected_T_pioneer_world_from_cam_rotation": [[1, 0, 0], [0, -1, 0], [0, 0, -1]]},
+    {"face_name": "left", "rotation_degrees": [0.0, 0.0, 0.0], "expected_forward_ue": [1.0, 0.0, 0.0], "expected_T_pioneer_world_from_cam_rotation": [[0, 0, 1], [0, -1, 0], [1, 0, 0]]},
+    {"face_name": "right", "rotation_degrees": [0.0, 180.0, 0.0], "expected_forward_ue": [-1.0, 0.0, 0.0], "expected_T_pioneer_world_from_cam_rotation": [[0, 0, -1], [0, -1, 0], [-1, 0, 0]]},
+    {"face_name": "up", "rotation_degrees": [90.0, 0.0, -90.0], "expected_forward_ue": [0.0, 0.0, 1.0], "expected_T_pioneer_world_from_cam_rotation": [[-1, 0, 0], [0, 0, 1], [0, 1, 0]]},
+    {"face_name": "down", "rotation_degrees": [-90.0, 0.0, 90.0], "expected_forward_ue": [0.0, 0.0, -1.0], "expected_T_pioneer_world_from_cam_rotation": [[-1, 0, 0], [0, 0, -1], [0, -1, 0]]}
+  ],
+  "erp_convention": {"projection": "equirectangular", "world_up": "+Y", "longitude_zero": "+Z/front", "image_right_quarter": "-X/right", "aspect_ratio": "2:1"},
+  "lighting_preset": {"sky_atmosphere": true, "directional_light_rotation_degrees": [-50.0, -35.0, 0.0], "directional_light_intensity_lux": 8.0, "sky_light": true, "volumetric_cloud": false},
+  "lighting_ablation": {
+    "schema_version": "pan31.ue5-lighting-ablation.v1",
+    "variant_id": "shadow_fill_linear_0_006_v1",
+    "capture_exposure_compensation_ev": 0.0,
+    "post_read_exposure_transform_ev": 0.5,
+    "post_read_shadow_lift": {"method": "geometry_masked_linear_toe_lift_v1", "max_linear_lift": 0.006, "cutoff_linear_luma": 0.18, "rolloff_power": 2.0},
+    "enable_manual_exposure_pipeline": false,
+    "directional_light": {"intensity": 7.0, "source_angle_degrees": 3.0},
+    "sky_light": {"intensity_scale": 3.0, "recapture_scene": true}
+  },
+  "console_variables": {"r.DefaultFeature.AutoExposure": 0, "r.DefaultFeature.MotionBlur": 0, "r.MotionBlurQuality": 0, "r.AntiAliasingMethod": 1, "r.TemporalAA.Upsampling": 0}
+}

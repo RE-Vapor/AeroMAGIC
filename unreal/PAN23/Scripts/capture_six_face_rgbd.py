@@ -136,30 +136,76 @@ def write_float32(path, values):
         payload.tofile(stream)
 
 
-def _srgb_exposure_channel(value, exposure_ev):
+def _srgb_to_linear(value):
     srgb = float(value) / 255.0
-    linear = srgb / 12.92 if srgb <= 0.04045 else ((srgb + 0.055) / 1.055) ** 2.4
-    exposed = min(1.0, max(0.0, linear * (2.0 ** exposure_ev)))
-    encoded = 12.92 * exposed if exposed <= 0.0031308 else 1.055 * (exposed ** (1.0 / 2.4)) - 0.055
+    return srgb / 12.92 if srgb <= 0.04045 else ((srgb + 0.055) / 1.055) ** 2.4
+
+
+def _linear_to_srgb_byte(value):
+    linear = min(1.0, max(0.0, float(value)))
+    encoded = 12.92 * linear if linear <= 0.0031308 else 1.055 * (linear ** (1.0 / 2.4)) - 0.055
     return min(255, max(0, int(round(255.0 * encoded))))
 
 
-def write_rgb(path, colors, exposure_ev=0.0):
+def write_rgb(path, colors, exposure_ev=0.0, shadow_lift=None, valid_mask=None):
+    if valid_mask is not None and len(valid_mask) != len(colors):
+        raise RuntimeError("RGB and geometry mask lengths differ")
     payload = bytearray()
     changed_channels = 0
-    for color in colors:
+    exposure_changed_channels = 0
+    shadow_changed_channels = 0
+    shadow_lifted_pixels = 0
+    shadow_no_hit_changed_pixels = 0
+    shadow_bright_changed_pixels = 0
+    geometry_valid_pixels = (
+        sum(1 for value in valid_mask if bool(value)) if valid_mask is not None else 0
+    )
+    exposure_multiplier = 2.0 ** exposure_ev
+    max_lift = float(shadow_lift["max_linear_lift"]) if shadow_lift else 0.0
+    cutoff = float(shadow_lift["cutoff_linear_luma"]) if shadow_lift else 1.0
+    power = float(shadow_lift["rolloff_power"]) if shadow_lift else 1.0
+    for index, color in enumerate(colors):
         source = (int(color.r), int(color.g), int(color.b))
-        transformed = tuple(
-            _srgb_exposure_channel(value, exposure_ev) for value in source
+        exposed_linear = tuple(
+            min(1.0, max(0.0, _srgb_to_linear(value) * exposure_multiplier))
+            for value in source
         )
+        exposure_only = tuple(_linear_to_srgb_byte(value) for value in exposed_linear)
+        exposure_changed_channels += sum(a != b for a, b in zip(source, exposure_only))
+        transformed = exposure_only
+        if shadow_lift and valid_mask is not None and bool(valid_mask[index]):
+            luma = (
+                0.2126 * exposed_linear[0]
+                + 0.7152 * exposed_linear[1]
+                + 0.0722 * exposed_linear[2]
+            )
+            if luma < cutoff:
+                weight = (1.0 - luma / cutoff) ** power
+                lifted_linear = tuple(min(1.0, value + max_lift * weight) for value in exposed_linear)
+                transformed = tuple(_linear_to_srgb_byte(value) for value in lifted_linear)
+                shadow_delta = sum(a != b for a, b in zip(exposure_only, transformed))
+                shadow_changed_channels += shadow_delta
+                shadow_lifted_pixels += int(shadow_delta > 0)
+            elif transformed != exposure_only:
+                shadow_bright_changed_pixels += 1
+        elif shadow_lift and transformed != exposure_only:
+            shadow_no_hit_changed_pixels += 1
         changed_channels += sum(a != b for a, b in zip(source, transformed))
         payload.extend(transformed)
     path.write_bytes(payload)
     return {
-        "method": "deterministic_srgb_to_linear_multiply_to_srgb_v1",
+        "method": "deterministic_srgb_exposure_plus_geometry_masked_linear_toe_lift_v2",
         "exposure_ev": float(exposure_ev),
-        "linear_multiplier": float(2.0 ** exposure_ev),
+        "linear_multiplier": float(exposure_multiplier),
         "changed_channel_count": int(changed_channels),
+        "exposure_changed_channel_count": int(exposure_changed_channels),
+        "shadow_lift_changed_channel_count": int(shadow_changed_channels),
+        "shadow_lifted_pixel_count": int(shadow_lifted_pixels),
+        "shadow_lift_geometry_valid_pixel_count": int(geometry_valid_pixels),
+        "shadow_lift_no_hit_pixel_count": int(len(colors) - geometry_valid_pixels),
+        "shadow_lift_no_hit_changed_pixel_count": int(shadow_no_hit_changed_pixels),
+        "shadow_lift_bright_region_changed_pixel_count": int(shadow_bright_changed_pixels),
+        "shadow_lift": shadow_lift,
         "channel_count": int(len(colors) * 3),
         "canonical_rgb_authority": "rgb_uint8.bin",
         "exported_png_role": "untransformed_ue5_diagnostic",
@@ -253,6 +299,7 @@ def apply_lighting_ablation(world, actors, config):
             "applied": False,
             "capture_exposure_compensation_ev": 0.0,
             "post_read_exposure_transform_ev": 0.0,
+            "post_read_shadow_lift": None,
             "before": None,
             "after": None,
         }
@@ -270,6 +317,28 @@ def apply_lighting_ablation(world, actors, config):
     post_read_exposure = float(spec.get("post_read_exposure_transform_ev", 0.0))
     if not math.isfinite(post_read_exposure) or not -5.0 <= post_read_exposure <= 5.0:
         raise RuntimeError("PAN-31 post-read exposure must be finite in [-5,5]")
+    shadow_lift_spec = spec.get("post_read_shadow_lift")
+    shadow_lift = None
+    if shadow_lift_spec is not None:
+        if not isinstance(shadow_lift_spec, dict):
+            raise RuntimeError("PAN-33 post-read shadow lift must be an object")
+        if shadow_lift_spec.get("method") != "geometry_masked_linear_toe_lift_v1":
+            raise RuntimeError("PAN-33 shadow lift method is unsupported")
+        max_lift = float(shadow_lift_spec.get("max_linear_lift", -1.0))
+        cutoff = float(shadow_lift_spec.get("cutoff_linear_luma", -1.0))
+        power = float(shadow_lift_spec.get("rolloff_power", -1.0))
+        if not math.isfinite(max_lift) or not 0.0 < max_lift <= 0.1:
+            raise RuntimeError("PAN-33 max linear shadow lift must be in (0,0.1]")
+        if not math.isfinite(cutoff) or not 0.0 < cutoff < 1.0:
+            raise RuntimeError("PAN-33 shadow cutoff must be in (0,1)")
+        if not math.isfinite(power) or not 1.0 <= power <= 8.0:
+            raise RuntimeError("PAN-33 shadow rolloff power must be in [1,8]")
+        shadow_lift = {
+            "method": "geometry_masked_linear_toe_lift_v1",
+            "max_linear_lift": max_lift,
+            "cutoff_linear_luma": cutoff,
+            "rolloff_power": power,
+        }
     exposure_cvars_before = _exposure_cvars()
     enable_manual_pipeline = bool(spec.get("enable_manual_exposure_pipeline", False))
     if enable_manual_pipeline:
@@ -323,6 +392,7 @@ def apply_lighting_ablation(world, actors, config):
         "applied": True,
         "capture_exposure_compensation_ev": exposure,
         "post_read_exposure_transform_ev": post_read_exposure,
+        "post_read_shadow_lift": shadow_lift,
         "manual_exposure_pipeline_enabled": enable_manual_pipeline,
         "exposure_cvars_before": exposure_cvars_before,
         "exposure_cvars_after": exposure_cvars_after,
@@ -561,13 +631,6 @@ def main():
             if rgb_samples is None or len(rgb_samples) != resolution * resolution:
                 raise RuntimeError(f"RGB readback failed for {name}")
             rgb_raw = face_dir / "rgb_uint8.bin"
-            serialization_started = time.perf_counter()
-            rgb_transform_report = write_rgb(
-                rgb_raw,
-                rgb_samples,
-                float(lighting_report["post_read_exposure_transform_ev"]),
-            )
-            rgb_serialization_seconds = time.perf_counter() - serialization_started
             export_started = time.perf_counter()
             unreal.RenderingLibrary.export_render_target(
                 world, rgb_target, str(face_dir), "rgb"
@@ -690,6 +753,15 @@ def main():
             mask_write_started = time.perf_counter()
             mask_path.write_bytes(mask_values)
             mask_write_seconds = time.perf_counter() - mask_write_started
+            serialization_started = time.perf_counter()
+            rgb_transform_report = write_rgb(
+                rgb_raw,
+                rgb_samples,
+                float(lighting_report["post_read_exposure_transform_ev"]),
+                lighting_report.get("post_read_shadow_lift"),
+                mask_values,
+            )
+            rgb_serialization_seconds = time.perf_counter() - serialization_started
             face_reports.append(
                 {
                     "face_name": name,
