@@ -27,6 +27,7 @@
     "schema_version": "pan31.ue5-lighting-ablation.v1",
     "variant_id": "exposure_only_ev_plus_1",
     "capture_exposure_compensation_ev": 1.0,
+    "enable_manual_exposure_pipeline": true,
     "directional_light": null,
     "sky_light": null
   },

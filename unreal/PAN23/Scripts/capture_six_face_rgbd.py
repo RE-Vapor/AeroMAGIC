@@ -204,7 +204,22 @@ def _lighting_snapshot(directional, skylight):
     }
 
 
-def apply_lighting_ablation(actors, config):
+def _exposure_cvars():
+    return {
+        "r.DefaultFeature.AutoExposure": int(
+            unreal.SystemLibrary.get_console_variable_int_value(
+                "r.DefaultFeature.AutoExposure"
+            )
+        ),
+        "r.EyeAdaptationQuality": int(
+            unreal.SystemLibrary.get_console_variable_int_value(
+                "r.EyeAdaptationQuality"
+            )
+        ),
+    }
+
+
+def apply_lighting_ablation(world, actors, config):
     """Apply one transient PAN-31 lighting variant without saving the level."""
 
     spec = config.get("lighting_ablation")
@@ -228,6 +243,19 @@ def apply_lighting_ablation(actors, config):
     exposure = float(spec.get("capture_exposure_compensation_ev", 0.0))
     if not math.isfinite(exposure) or not -5.0 <= exposure <= 5.0:
         raise RuntimeError("PAN-31 exposure compensation must be finite in [-5,5]")
+    exposure_cvars_before = _exposure_cvars()
+    enable_manual_pipeline = bool(spec.get("enable_manual_exposure_pipeline", False))
+    if enable_manual_pipeline:
+        unreal.SystemLibrary.execute_console_command(
+            world, "r.DefaultFeature.AutoExposure 1"
+        )
+        unreal.SystemLibrary.execute_console_command(world, "r.EyeAdaptationQuality 2")
+    exposure_cvars_after = _exposure_cvars()
+    if enable_manual_pipeline and exposure_cvars_after != {
+        "r.DefaultFeature.AutoExposure": 1,
+        "r.EyeAdaptationQuality": 2,
+    }:
+        raise RuntimeError("PAN-31 could not enable the manual exposure pipeline")
 
     directional_override = spec.get("directional_light")
     if directional_override is not None:
@@ -267,6 +295,9 @@ def apply_lighting_ablation(actors, config):
         "variant_id": variant_id,
         "applied": True,
         "capture_exposure_compensation_ev": exposure,
+        "manual_exposure_pipeline_enabled": enable_manual_pipeline,
+        "exposure_cvars_before": exposure_cvars_before,
+        "exposure_cvars_after": exposure_cvars_after,
         "before": before,
         "after": _lighting_snapshot(directional, skylight),
     }
@@ -406,7 +437,7 @@ def main():
         if abs(world_to_meters - float(config["world_to_meters"])) > 1e-6:
             raise RuntimeError("WorldToMeters does not match capture config")
         actors = actor_subsystem.get_all_level_actors()
-        lighting_report = apply_lighting_ablation(actors, config)
+        lighting_report = apply_lighting_ablation(world, actors, config)
         root, captures, rig_source = resolve_rig(
             actor_subsystem, actors, request, config
         )

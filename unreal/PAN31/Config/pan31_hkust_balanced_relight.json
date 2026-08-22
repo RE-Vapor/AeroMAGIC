@@ -27,6 +27,7 @@
     "schema_version": "pan31.ue5-lighting-ablation.v1",
     "variant_id": "balanced_relight_ev_plus_1_v2",
     "capture_exposure_compensation_ev": 1.0,
+    "enable_manual_exposure_pipeline": true,
     "directional_light": {"intensity": 6.0, "source_angle_degrees": 2.0},
     "sky_light": {"intensity_scale": 2.0, "recapture_scene": true}
   },
