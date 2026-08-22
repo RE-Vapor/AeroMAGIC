@@ -14,6 +14,12 @@ CONFIG_PATH = (
     / "test"
     / "test_pioneer_hkust_pan30_position_only_low_altitude_50obs_a1_config.json"
 )
+A2_CONFIG_PATH = (
+    ROOT
+    / "configs"
+    / "test"
+    / "test_pioneer_hkust_pan30_position_only_low_altitude_50obs_a2_config.json"
+)
 POLICY_PATH = (
     ROOT
     / "configs"
@@ -105,6 +111,25 @@ class Pan30LowAltitudeConfigTests(unittest.TestCase):
             self.config["experiment_metrics_dir"].startswith(
                 self.config["experiment_run_dir"] + "/"
             )
+        )
+
+    def test_attempt_two_has_fully_isolated_mutable_outputs(self):
+        attempt_two = json.loads(A2_CONFIG_PATH.read_text(encoding="utf-8"))
+        mutable_keys = (
+            "results_json_name",
+            "lmdb_dir_name",
+            "validation_memory_dir_name",
+            "experiment_run_id",
+            "experiment_run_dir",
+            "experiment_metrics_dir",
+        )
+        for key in mutable_keys:
+            self.assertNotEqual(self.config[key], attempt_two[key])
+            self.assertIn("a2", attempt_two[key].lower())
+        self.assertTrue(attempt_two["experiment_run_dir"].endswith("attempt-002"))
+        self.assertEqual(
+            attempt_two["debug_profile"],
+            "pioneer-low-altitude-50",
         )
 
 

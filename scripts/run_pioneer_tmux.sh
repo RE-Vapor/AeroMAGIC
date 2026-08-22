@@ -44,6 +44,16 @@ verify_run_snapshot() {
     printf 'debug profile snapshot changed after manifest creation\n' >&2
     return 2
   fi
+  local position_policy_snapshot
+  position_policy_snapshot="$(manifest_value "$manifest_path" position_policy_snapshot)"
+  if [[ -n "$position_policy_snapshot" ]]; then
+    position_policy_snapshot="$run_dir/$position_policy_snapshot"
+    if [[ "$(sha256sum "$position_policy_snapshot" | awk '{print $1}')" != \
+          "$(manifest_value "$manifest_path" position_policy_sha256)" ]]; then
+      printf 'position policy snapshot changed after manifest creation\n' >&2
+      return 2
+    fi
+  fi
   local macarons_params_snapshot
   macarons_params_snapshot="$run_dir/$(manifest_value "$manifest_path" macarons_params_snapshot)"
   if [[ "$(sha256sum "$macarons_params_snapshot" | awk '{print $1}')" != \
@@ -593,9 +603,40 @@ script_path="$repo_root/scripts/run_pioneer_tmux.sh"
 commit_sha="$(git -C "$repo_root" rev-parse HEAD)"
 config_sha="$(sha256sum "$config_path" | awk '{print $1}')"
 profile_sha="$(sha256sum "$profile_path" | awk '{print $1}')"
+position_policy_relative="$($python_bin -c '
+import json, sys
+p = json.load(open(sys.argv[1], encoding="utf-8"))
+policy = p.get("validation_position_policy") or {}
+print(policy.get("policy_path", ""))
+' "$profile_path")"
+position_policy_sha=""
 cp -p -- "$config_path" "$run_dir/config.json"
 profile_snapshot_name="$debug_profile.json"
 cp -p -- "$profile_path" "$run_dir/$profile_snapshot_name"
+if [[ -n "$position_policy_relative" ]]; then
+  if [[ "$position_policy_relative" == /* || "$position_policy_relative" == *..* ]]; then
+    printf 'position policy path must be a safe path relative to configs/: %s\n' \
+      "$position_policy_relative" >&2
+    exit 2
+  fi
+  position_policy_source="$repo_root/configs/$position_policy_relative"
+  if [[ ! -f "$position_policy_source" ]]; then
+    printf 'position policy file is missing: %s\n' "$position_policy_source" >&2
+    exit 2
+  fi
+  position_policy_sha="$($python_bin -c '
+import json, sys
+p = json.load(open(sys.argv[1], encoding="utf-8"))
+print((p.get("validation_position_policy") or {}).get("source_policy_sha256", ""))
+' "$profile_path")"
+  if [[ "$(sha256sum "$position_policy_source" | awk '{print $1}')" != \
+        "$position_policy_sha" ]]; then
+    printf 'position policy hash does not match debug profile\n' >&2
+    exit 2
+  fi
+  mkdir -p "$run_dir/$(dirname "$position_policy_relative")"
+  cp -p -- "$position_policy_source" "$run_dir/$position_policy_relative"
+fi
 cp -p -- "$macarons_params_path" "$run_dir/macarons_params.json"
 if [[ "$(sha256sum "$run_dir/config.json" | awk '{print $1}')" != "$config_sha" ]]; then
   printf 'config snapshot hash mismatch\n' >&2
@@ -666,6 +707,8 @@ fi
   printf 'debug_profile=%s\n' "$debug_profile"
   printf 'debug_profile_sha256=%s\n' "$profile_sha"
   printf 'debug_profile_snapshot=%s\n' "$profile_snapshot_name"
+  printf 'position_policy_snapshot=%s\n' "$position_policy_relative"
+  printf 'position_policy_sha256=%s\n' "$position_policy_sha"
   printf 'macarons_params_name=%s\n' "$params_name"
   printf 'macarons_params_snapshot=macarons_params.json\n'
   printf 'macarons_params_sha256=%s\n' "$macarons_params_sha256"

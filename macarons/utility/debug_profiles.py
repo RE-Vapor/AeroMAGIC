@@ -210,12 +210,28 @@ def load_debug_profile(profile_name: str, profiles_dir: str) -> Mapping[str, Any
                     f"Debug profile {path} validation_position_policy.policy_path "
                     "must be a non-empty relative path."
                 )
-            configs_root = Path(profiles_dir).resolve().parent
-            resolved_policy = (configs_root / policy_path).resolve()
-            if configs_root not in resolved_policy.parents or not resolved_policy.is_file():
+            profiles_root = Path(profiles_dir).resolve()
+            configs_root = profiles_root.parent
+            candidates = (
+                (profiles_root / policy_path).resolve(),
+                (configs_root / policy_path).resolve(),
+            )
+            resolved_policy = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.is_file()
+                    and (
+                        profiles_root in candidate.parents
+                        or configs_root in candidate.parents
+                    )
+                ),
+                None,
+            )
+            if resolved_policy is None:
                 raise ValueError(
                     f"Debug profile {path} validation_position_policy.policy_path "
-                    "must resolve to a file inside configs/."
+                    "must resolve inside the live configs/ tree or the frozen run snapshot."
                 )
             digest = hashlib.sha256(resolved_policy.read_bytes()).hexdigest()
             if digest != position_policy["source_policy_sha256"]:
