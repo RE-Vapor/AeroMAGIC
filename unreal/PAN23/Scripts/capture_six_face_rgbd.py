@@ -23,6 +23,7 @@ PROJECT_COMMIT = os.environ["PAN15_PROJECT_COMMIT"]
 GPU_INDEX = int(os.environ["PAN15_GPU_INDEX"])
 FACE_NAMES = ("front", "back", "left", "right", "up", "down")
 PAN29_REPLAY_RIG_SCHEMA = "pan29.ue5-replay-rig.v1"
+PAN31_LIGHTING_SCHEMA = "pan31.ue5-lighting-ablation.v1"
 
 
 def sha256(path):
@@ -161,6 +162,138 @@ def asset(path, relative_to):
     }
 
 
+def _single_actor_by_label(actors, label):
+    matches = [actor for actor in actors if actor.get_actor_label() == label]
+    if len(matches) != 1:
+        raise RuntimeError(f"expected one {label} actor, found {len(matches)}")
+    return matches[0]
+
+
+def _component_float(component, property_name):
+    return float(component.get_editor_property(property_name))
+
+
+def _lighting_snapshot(directional, skylight):
+    directional_component = directional.get_component_by_class(
+        unreal.DirectionalLightComponent
+    )
+    skylight_component = skylight.get_component_by_class(unreal.SkyLightComponent)
+    if directional_component is None or skylight_component is None:
+        raise RuntimeError("PAN-31 could not resolve the level light components")
+    return {
+        "directional_light": {
+            "actor_label": directional.get_actor_label(),
+            "rotation_degrees": rot(directional.get_actor_rotation()),
+            "intensity": _component_float(directional_component, "intensity"),
+            "source_angle_degrees": _component_float(
+                directional_component, "source_angle"
+            ),
+            "cast_shadows": bool(
+                directional_component.get_editor_property("cast_shadows")
+            ),
+        },
+        "sky_light": {
+            "actor_label": skylight.get_actor_label(),
+            "intensity_scale": _component_float(
+                skylight_component, "intensity_scale"
+            ),
+            "real_time_capture": bool(
+                skylight_component.get_editor_property("real_time_capture")
+            ),
+        },
+    }
+
+
+def apply_lighting_ablation(actors, config):
+    """Apply one transient PAN-31 lighting variant without saving the level."""
+
+    spec = config.get("lighting_ablation")
+    if spec is None:
+        return {
+            "schema_version": PAN31_LIGHTING_SCHEMA,
+            "variant_id": "level_baseline",
+            "applied": False,
+            "capture_exposure_compensation_ev": 0.0,
+            "before": None,
+            "after": None,
+        }
+    directional = _single_actor_by_label(actors, "PAN13_DirectionalLight")
+    skylight = _single_actor_by_label(actors, "PAN13_SkyLight")
+    before = _lighting_snapshot(directional, skylight)
+    if not isinstance(spec, dict) or spec.get("schema_version") != PAN31_LIGHTING_SCHEMA:
+        raise RuntimeError("invalid PAN-31 lighting_ablation schema")
+    variant_id = spec.get("variant_id")
+    if not isinstance(variant_id, str) or not variant_id:
+        raise RuntimeError("PAN-31 lighting variant_id must be non-empty")
+    exposure = float(spec.get("capture_exposure_compensation_ev", 0.0))
+    if not math.isfinite(exposure) or not -5.0 <= exposure <= 5.0:
+        raise RuntimeError("PAN-31 exposure compensation must be finite in [-5,5]")
+
+    directional_override = spec.get("directional_light")
+    if directional_override is not None:
+        if not isinstance(directional_override, dict):
+            raise RuntimeError("PAN-31 directional_light override must be an object")
+        directional_component = directional.get_component_by_class(
+            unreal.DirectionalLightComponent
+        )
+        if "intensity" in directional_override:
+            intensity = float(directional_override["intensity"])
+            if not math.isfinite(intensity) or intensity < 0.0:
+                raise RuntimeError("PAN-31 directional intensity must be non-negative")
+            directional_component.set_editor_property("intensity", intensity)
+        if "source_angle_degrees" in directional_override:
+            source_angle = float(directional_override["source_angle_degrees"])
+            if not math.isfinite(source_angle) or not 0.0 <= source_angle <= 10.0:
+                raise RuntimeError("PAN-31 source angle must be finite in [0,10]")
+            directional_component.set_editor_property("source_angle", source_angle)
+
+    skylight_override = spec.get("sky_light")
+    if skylight_override is not None:
+        if not isinstance(skylight_override, dict):
+            raise RuntimeError("PAN-31 sky_light override must be an object")
+        skylight_component = skylight.get_component_by_class(unreal.SkyLightComponent)
+        if "intensity_scale" in skylight_override:
+            intensity_scale = float(skylight_override["intensity_scale"])
+            if not math.isfinite(intensity_scale) or intensity_scale < 0.0:
+                raise RuntimeError("PAN-31 sky intensity must be non-negative")
+            skylight_component.set_editor_property("intensity_scale", intensity_scale)
+        if bool(skylight_override.get("recapture_scene", False)):
+            skylight_component.set_mobility(unreal.ComponentMobility.MOVABLE)
+            skylight_component.set_editor_property("real_time_capture", True)
+            skylight_component.recapture_sky()
+
+    return {
+        "schema_version": PAN31_LIGHTING_SCHEMA,
+        "variant_id": variant_id,
+        "applied": True,
+        "capture_exposure_compensation_ev": exposure,
+        "before": before,
+        "after": _lighting_snapshot(directional, skylight),
+    }
+
+
+def apply_capture_exposure(component, lighting_report):
+    compensation = float(lighting_report["capture_exposure_compensation_ev"])
+    if lighting_report["applied"] is not True:
+        return {
+            "manual_auto_exposure_disabled_by_project": True,
+            "auto_exposure_bias_override": False,
+            "exposure_compensation_ev": 0.0,
+            "post_process_blend_weight": 0.0,
+        }
+    settings = component.get_editor_property("post_process_settings")
+    settings.set_editor_property("override_auto_exposure_bias", True)
+    settings.set_editor_property("auto_exposure_bias", compensation)
+    component.set_editor_property("post_process_settings", settings)
+    component.set_editor_property("post_process_blend_weight", 1.0)
+    return {
+        "manual_auto_exposure_disabled_by_project": True,
+        "auto_exposure_bias_override": True,
+        "exposure_compensation_ev": compensation,
+        "post_process_blend_weight": 1.0,
+    }
+
+
 def create_transient_rig(actor_subsystem, location, config):
     root = actor_subsystem.spawn_actor_from_class(
         unreal.TargetPoint, location, unreal.Rotator(), transient=True
@@ -261,6 +394,7 @@ def main():
         if abs(world_to_meters - float(config["world_to_meters"])) > 1e-6:
             raise RuntimeError("WorldToMeters does not match capture config")
         actors = actor_subsystem.get_all_level_actors()
+        lighting_report = apply_lighting_ablation(actors, config)
         root, captures, rig_source = resolve_rig(
             actor_subsystem, actors, request, config
         )
@@ -328,6 +462,7 @@ def main():
             component.set_editor_property("fov_angle", config["fov_degrees"])
             component.set_editor_property("capture_every_frame", False)
             component.set_editor_property("capture_on_movement", False)
+            exposure_report = apply_capture_exposure(component, lighting_report)
             face_dir = raw_root / name
             face_dir.mkdir(parents=True, exist_ok=True)
 
@@ -502,6 +637,7 @@ def main():
                         if pioneer_transform is not None and expected_rotation is not None
                         else None
                     ),
+                    "capture_exposure": exposure_report,
                     "rgb_uint8": {
                         **asset(rgb_raw, temporary),
                         "dtype": "uint8",
@@ -567,6 +703,7 @@ def main():
                 "final_encoding_decision": "deferred to PAN-20",
             },
             "lighting_preset": config["lighting_preset"],
+            "lighting_ablation": lighting_report,
             "console_variables": config["console_variables"],
             "faces": face_reports,
             "timings_seconds": {

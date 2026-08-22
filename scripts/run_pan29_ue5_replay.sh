@@ -21,6 +21,8 @@ OBSERVATION_IDS_CSV=0,5,10,14,19
 REPLAY_TASK=PAN-29
 REPLAY_REQUEST_PREFIX=pan29-hkust-gt20obs
 PREVIEW_FILENAME=hkust_gt20obs_pan29_ue5_replay_preview.png
+CAPTURE_CONFIG_REPO_RELATIVE=unreal/PAN29/Config/pan29_hkust_replay.json
+LIGHTING_VARIANT_ID=level_baseline
 
 load_replay_spec() {
   local spec="$1" python_bin="$2"
@@ -39,9 +41,15 @@ for key in (
  value=p.get(key); assert isinstance(value,str) and value
  print(value)
 print(",".join(str(x) for x in ids))
+capture_config=p.get("capture_config_repo_relative", "unreal/PAN29/Config/pan29_hkust_replay.json")
+variant_id=p.get("lighting_variant_id", "level_baseline")
+assert isinstance(capture_config,str) and capture_config and not capture_config.startswith("/") and ".." not in capture_config.split("/")
+assert isinstance(variant_id,str) and variant_id
+print(capture_config)
+print(variant_id)
 PY
   )
-  [[ "${#values[@]}" -eq 11 ]] || return 2
+  [[ "${#values[@]}" -eq 13 ]] || return 2
   REPLAY_TASK="${values[0]}"
   SOURCE_RUN="${values[1]}"
   SOURCE_METRICS="${values[2]}"
@@ -53,6 +61,8 @@ PY
   REPLAY_REQUEST_PREFIX="${values[8]}"
   PREVIEW_FILENAME="${values[9]}"
   OBSERVATION_IDS_CSV="${values[10]}"
+  CAPTURE_CONFIG_REPO_RELATIVE="${values[11]}"
+  LIGHTING_VARIANT_ID="${values[12]}"
   IFS=',' read -r -a OBSERVATION_IDS <<< "$OBSERVATION_IDS_CSV"
   SOURCE_PREVIEW_SIDECAR="${SOURCE_PREVIEW%.png}.json"
 }
@@ -68,6 +78,7 @@ verify_snapshot() {
   [[ "$(git -C "$repo_root" rev-parse HEAD)" == "$(manifest_value git_commit "$manifest")" ]] || return 2
   [[ -z "$(git -C "$repo_root" status --porcelain)" ]] || return 2
   [[ "$(sha256sum "$run_dir/capture_config.json" | awk '{print $1}')" == "$(manifest_value capture_config_sha256 "$manifest")" ]] || return 2
+  [[ "$(sha256sum "$repo_root/$CAPTURE_CONFIG_REPO_RELATIVE" | awk '{print $1}')" == "$(manifest_value capture_config_source_sha256 "$manifest")" ]] || return 2
   [[ "$(sha256sum "$UE_PROJECT" | awk '{print $1}')" == "$(manifest_value ue_project_sha256 "$manifest")" ]] || return 2
   [[ "$(sha256sum "$UE_DEFAULT_ENGINE" | awk '{print $1}')" == "$(manifest_value ue_default_engine_sha256 "$manifest")" ]] || return 2
   [[ "$(sha256sum "$UE_LEVEL" | awk '{print $1}')" == "$(manifest_value ue_level_sha256 "$manifest")" ]] || return 2
@@ -299,7 +310,7 @@ tmux has-session -t "$session" 2>/dev/null && { printf 'tmux session already exi
 
 source_config="$SOURCE_CONFIG"
 source_manifest="$SOURCE_RUN/manifest.txt"
-capture_config_source="$repo_root/unreal/PAN29/Config/pan29_hkust_replay.json"
+capture_config_source="$repo_root/$CAPTURE_CONFIG_REPO_RELATIVE"
 for required in "$python_bin" "$UE_COMMAND" "$source_config" "$source_manifest" "$SOURCE_METRICS" "$SOURCE_CAPTURE/frames" "$SOURCE_LMDB/data.mdb" "$SOURCE_PREVIEW" "$SOURCE_PREVIEW_SIDECAR" "$SPATIAL_POLICY" "$UE_INSPECTION" "$UE_PROJECT" "$UE_DEFAULT_ENGINE" "$UE_LEVEL" "$capture_config_source"; do
   [[ -e "$required" ]] || { printf 'missing replay input: %s\n' "$required" >&2; exit 2; }
 done
@@ -352,7 +363,9 @@ commit_sha="$(git -C "$repo_root" rev-parse HEAD)"
   printf 'source_lmdb_data_sha256=%s\n' "$(sha256sum "$SOURCE_LMDB/data.mdb" | awk '{print $1}')"
   printf 'source_original_preview_sha256=%s\n' "$(sha256sum "$SOURCE_PREVIEW" | awk '{print $1}')"
   printf 'capture_config_source_sha256=%s\n' "$(sha256sum "$capture_config_source" | awk '{print $1}')"
+  printf 'capture_config_repo_relative=%s\n' "$CAPTURE_CONFIG_REPO_RELATIVE"
   printf 'capture_config_sha256=%s\n' "$(sha256sum "$run_dir/capture_config.json" | awk '{print $1}')"
+  printf 'lighting_variant_id=%s\n' "$LIGHTING_VARIANT_ID"
   printf 'capture_script_sha256=%s\n' "$(sha256sum "$repo_root/unreal/PAN23/Scripts/capture_six_face_rgbd.py" | awk '{print $1}')"
   printf 'process_script_sha256=%s\n' "$(sha256sum "$repo_root/scripts/process_pan29_replay_capture.py" | awk '{print $1}')"
   printf 'preview_script_sha256=%s\n' "$(sha256sum "$repo_root/scripts/make_pan29_preview.py" | awk '{print $1}')"
