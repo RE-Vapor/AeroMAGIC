@@ -1,0 +1,84 @@
+{
+  "schema_version": "pioneer.low-altitude-flight-policy.v1",
+  "scene": "HKUST",
+  "purpose": "Visual-first low-altitude position-only traversal with a hard 120 m AGL ceiling.",
+  "debug_only": true,
+  "coverage_comparable": false,
+  "coordinate_convention": {
+    "planner_position_axes": [
+      "x",
+      "vertical_y",
+      "z"
+    ],
+    "planner_to_ue_cm": "[ue_x,ue_y,ue_z]=[500*x,500*z,500*y]",
+    "scene_units_per_meter": 0.2,
+    "agl_definition": "camera global altitude minus the highest downward mesh-ray intersection at the same horizontal camera-grid centre"
+  },
+  "source_assets": {
+    "mesh": {
+      "path": "data/Macarons++/HKUST/12-NW-6C.obj",
+      "sha256": "cd7b18645cc574c43e55d5f927f8440c810b32f2f8e859700018582535ffa635"
+    },
+    "settings": {
+      "path": "data/Macarons++/HKUST/settings.json",
+      "sha256": "b308575f60d2810aacb952ed42b1e64ed0089067cc227c2eb6b26d23cbf4201a"
+    },
+    "occupied_pose": {
+      "path": "data/Macarons++/HKUST/occupied_pose.pt",
+      "sha256": "c7908f28bd148cb02a6e5d8b364f8e7814f7f7f7a054b27c8d33491bd0c134c4"
+    }
+  },
+  "camera_lattice": {
+    "shape": [
+      12,
+      5,
+      10
+    ],
+    "global_altitude_levels_m": [
+      32.5,
+      97.5,
+      162.5,
+      227.5,
+      292.5
+    ],
+    "position_index_min": [
+      0,
+      1,
+      0
+    ],
+    "position_index_max": [
+      6,
+      2,
+      9
+    ],
+    "start_pose_index": [
+      6,
+      1,
+      5,
+      2,
+      0
+    ]
+  },
+  "verified_envelope": {
+    "free_position_count": 63,
+    "connected_component_size_from_start": 63,
+    "start_global_altitude_m": 97.5,
+    "start_ground_height_m": 92.59671592372479,
+    "start_agl_m": 4.903284076275213,
+    "minimum_free_position_agl_m": 4.568834793467687,
+    "maximum_free_position_agl_m": 119.78684358273082,
+    "hard_ceiling_agl_m": 120.0,
+    "all_allowed_free_positions_within_ceiling": true,
+    "all_allowed_free_positions_in_one_component": true
+  },
+  "execution_contract": {
+    "planner_state_mode": "position_only",
+    "filter_complete_occupied_pose": true,
+    "segment_collision_gate": true,
+    "observation_count": 50,
+    "planned_move_count": 49,
+    "interpolation_steps": 1,
+    "start_count": 1
+  },
+  "evidence_boundary": "The ground proxy is the highest vertical hit on the runtime HKUST mesh. It is a reproducible AGL safety envelope for this debug experiment, not a surveyed terrain datum or a generally accepted low-altitude flight policy."
+}

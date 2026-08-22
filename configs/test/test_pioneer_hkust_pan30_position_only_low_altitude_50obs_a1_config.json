@@ -1,0 +1,65 @@
+{
+  "numGPU": 0,
+  "dataset_path": "./data/Macarons++",
+  "test_scenes": [
+    "HKUST"
+  ],
+  "params_name": "macarons_default_training_config.json",
+  "model_name": "trained_macarons.pth",
+  "results_json_name": "pan30_pioneer_hkust_position_only_lowalt_50obs_a1_results.json",
+  "test_resolution": 0.05,
+  "use_perfect_depth_map": true,
+  "kind_depth_map": "GT",
+  "compute_collision": true,
+  "experiment_shared_collision_gate": true,
+  "load_json": false,
+  "random_seed": 8,
+  "torch_seed": 9,
+  "lmdb_dir_name": "pan30_pioneer_hkust_position_only_lowalt_50obs_a1_lmdb",
+  "validation_memory_dir_name": "pan30_pioneer_hkust_position_only_lowalt_50obs_a1_memory",
+  "beam_width": 3,
+  "beam_steps": 3,
+  "debug_profile": "pioneer-low-altitude-50",
+  "planning_observation_mode": "cubemap6",
+  "pioneer_face_size": 256,
+  "pioneer_face_fov_degrees": 90.0,
+  "pioneer_voxel_size": 0.05,
+  "pioneer_planner_state_mode": "position_only",
+  "pioneer_cubemap_rig_frame": "world",
+  "pioneer_cubemap_extrinsics_version": "pytorch3d-world-axes-v1",
+  "pioneer_canonical_orientation_indices": [
+    2,
+    0
+  ],
+  "scene_texture_atlas_size": 4,
+  "validation_use_occupied_pose": true,
+  "validation_require_complete_occupied_pose": true,
+  "pioneer_filter_occupied_position_candidates": true,
+  "scene_mesh_transforms": {
+    "HKUST": {
+      "axis_order": [
+        0,
+        1,
+        2
+      ],
+      "axis_signs": [
+        1,
+        1,
+        1
+      ],
+      "translation": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "scale": 1.0
+    }
+  },
+  "experiment_metrics_enabled": true,
+  "experiment_run_id": "PAN-30-pioneer-hkust-position-only-lowalt-50obs-a1",
+  "experiment_run_dir": "../experiments/runs/integration-all-experiments/PAN-30-pioneer-hkust-position-only-low-altitude-50obs/attempt-001",
+  "experiment_metrics_dir": "../experiments/runs/integration-all-experiments/PAN-30-pioneer-hkust-position-only-low-altitude-50obs/attempt-001/metrics",
+  "da3_scene_units_per_meter": {
+    "HKUST": 0.2
+  }
+}

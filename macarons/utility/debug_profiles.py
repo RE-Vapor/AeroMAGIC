@@ -5,6 +5,7 @@ keeps scene, depth-provider, calibration, and model choices in the base config
 while making compute-related debug limits explicit and repeatable.
 """
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -17,6 +18,7 @@ DEBUG_PROFILE_NAMES = (
     "large-scene",
     "pioneer-20",
     "pioneer-50",
+    "pioneer-low-altitude-50",
     "pan21-two-observation",
 )
 
@@ -150,13 +152,23 @@ def load_debug_profile(profile_name: str, profiles_dir: str) -> Mapping[str, Any
         )
     position_policy = profile.get("validation_position_policy")
     if position_policy is not None:
-        expected_keys = {
+        required_keys = {
             "planner_to_ue_cm",
             "position_index_max",
             "position_index_min",
             "source_policy_sha256",
         }
-        if not isinstance(position_policy, dict) or set(position_policy) != expected_keys:
+        optional_keys = {
+            "hard_ceiling_agl_m",
+            "policy_path",
+            "start_agl_m",
+            "verified_free_position_count",
+        }
+        if (
+            not isinstance(position_policy, dict)
+            or not required_keys.issubset(position_policy)
+            or set(position_policy) - required_keys - optional_keys
+        ):
             raise ValueError(
                 f"Debug profile {path} validation_position_policy has invalid keys."
             )
@@ -190,6 +202,57 @@ def load_debug_profile(profile_name: str, profiles_dir: str) -> Mapping[str, Any
             raise ValueError(
                 f"Debug profile {path} validation_position_policy.source_policy_sha256 "
                 "must be a lowercase SHA-256."
+            )
+        policy_path = position_policy.get("policy_path")
+        if policy_path is not None:
+            if not isinstance(policy_path, str) or not policy_path:
+                raise ValueError(
+                    f"Debug profile {path} validation_position_policy.policy_path "
+                    "must be a non-empty relative path."
+                )
+            configs_root = Path(profiles_dir).resolve().parent
+            resolved_policy = (configs_root / policy_path).resolve()
+            if configs_root not in resolved_policy.parents or not resolved_policy.is_file():
+                raise ValueError(
+                    f"Debug profile {path} validation_position_policy.policy_path "
+                    "must resolve to a file inside configs/."
+                )
+            digest = hashlib.sha256(resolved_policy.read_bytes()).hexdigest()
+            if digest != position_policy["source_policy_sha256"]:
+                raise ValueError(
+                    f"Debug profile {path} validation_position_policy policy SHA-256 "
+                    "does not match source_policy_sha256."
+                )
+        ceiling = position_policy.get("hard_ceiling_agl_m")
+        start_agl = position_policy.get("start_agl_m")
+        if ceiling is not None and (
+            isinstance(ceiling, bool)
+            or not isinstance(ceiling, (int, float))
+            or float(ceiling) <= 0.0
+        ):
+            raise ValueError(
+                f"Debug profile {path} validation_position_policy.hard_ceiling_agl_m "
+                "must be positive."
+            )
+        if start_agl is not None and (
+            isinstance(start_agl, bool)
+            or not isinstance(start_agl, (int, float))
+            or float(start_agl) < 0.0
+            or (ceiling is not None and float(start_agl) > float(ceiling))
+        ):
+            raise ValueError(
+                f"Debug profile {path} validation_position_policy.start_agl_m "
+                "must lie within the AGL envelope."
+            )
+        free_count = position_policy.get("verified_free_position_count")
+        if free_count is not None and (
+            isinstance(free_count, bool)
+            or not isinstance(free_count, int)
+            or free_count < 1
+        ):
+            raise ValueError(
+                f"Debug profile {path} validation_position_policy."
+                "verified_free_position_count must be a positive integer."
             )
 
     expected_observations = (

@@ -1,0 +1,43 @@
+{
+  "name": "pioneer-low-altitude-50",
+  "description": "Fifty-observation HKUST PIONEER traversal inside the pinned low-altitude envelope with a 120 m AGL ceiling.",
+  "debug_only": true,
+  "coverage_comparable": false,
+  "output_suffix": "debug_pioneer_lowalt50",
+  "validation_start_position_override": [
+    6,
+    1,
+    5,
+    2,
+    0
+  ],
+  "validation_position_policy": {
+    "hard_ceiling_agl_m": 120.0,
+    "planner_to_ue_cm": "[ue_x,ue_y,ue_z]=[500*x,500*z,500*y]",
+    "policy_path": "flight_policies/hkust_low_altitude_120m_agl_v1.json",
+    "position_index_min": [
+      0,
+      1,
+      0
+    ],
+    "position_index_max": [
+      6,
+      2,
+      9
+    ],
+    "source_policy_sha256": "ec1f3a676a56705d6758d7186a38f8e9a8d62147269c34b0e9e915d905ef1158",
+    "start_agl_m": 4.903284076275213,
+    "verified_free_position_count": 63
+  },
+  "overrides": {
+    "validation_n_proxy_points": 100000,
+    "beam_width": 3,
+    "beam_steps": 3,
+    "validation_n_interpolation_steps": 1,
+    "validation_n_poses_in_trajectory": 49,
+    "experiment_budget_observations": 50,
+    "validation_max_start_positions": 1,
+    "random_seed": 8,
+    "torch_seed": 9
+  }
+}

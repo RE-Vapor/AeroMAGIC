@@ -22,6 +22,7 @@ class DebugProfileTests(unittest.TestCase):
             "large-scene": (200000, 3, 3, 21),
             "pioneer-20": (100000, 3, 3, 20),
             "pioneer-50": (100000, 3, 3, 50),
+            "pioneer-low-altitude-50": (100000, 3, 3, 50),
             "pan21-two-observation": (100000, 3, 3, 2),
         }
         for name in DEBUG_PROFILE_NAMES:
@@ -51,6 +52,23 @@ class DebugProfileTests(unittest.TestCase):
                     self.assertEqual(
                         profile["validation_position_policy"]["position_index_min"],
                         [0, 3, 0],
+                    )
+                if name == "pioneer-low-altitude-50":
+                    self.assertEqual(
+                        profile["validation_start_position_override"],
+                        [6, 1, 5, 2, 0],
+                    )
+                    self.assertEqual(
+                        profile["validation_position_policy"]["position_index_min"],
+                        [0, 1, 0],
+                    )
+                    self.assertEqual(
+                        profile["validation_position_policy"]["position_index_max"],
+                        [6, 2, 9],
+                    )
+                    self.assertEqual(
+                        profile["validation_position_policy"]["hard_ceiling_agl_m"],
+                        120.0,
                     )
 
     def test_apply_preserves_base_scene_and_isolates_outputs(self):
