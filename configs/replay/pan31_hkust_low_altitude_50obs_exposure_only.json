@@ -12,5 +12,5 @@
   "replay_request_prefix": "pan31-hkust-exposure-only",
   "preview_filename": "hkust_pan31_exposure_only_preview.png",
   "capture_config_repo_relative": "unreal/PAN31/Config/pan31_hkust_exposure_only.json",
-  "lighting_variant_id": "exposure_only_ev_plus_1"
+  "lighting_variant_id": "exposure_only_srgb_ev_plus_1_v2"
 }

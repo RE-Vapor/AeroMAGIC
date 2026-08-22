@@ -136,11 +136,34 @@ def write_float32(path, values):
         payload.tofile(stream)
 
 
-def write_rgb(path, colors):
+def _srgb_exposure_channel(value, exposure_ev):
+    srgb = float(value) / 255.0
+    linear = srgb / 12.92 if srgb <= 0.04045 else ((srgb + 0.055) / 1.055) ** 2.4
+    exposed = min(1.0, max(0.0, linear * (2.0 ** exposure_ev)))
+    encoded = 12.92 * exposed if exposed <= 0.0031308 else 1.055 * (exposed ** (1.0 / 2.4)) - 0.055
+    return min(255, max(0, int(round(255.0 * encoded))))
+
+
+def write_rgb(path, colors, exposure_ev=0.0):
     payload = bytearray()
+    changed_channels = 0
     for color in colors:
-        payload.extend((int(color.r), int(color.g), int(color.b)))
+        source = (int(color.r), int(color.g), int(color.b))
+        transformed = tuple(
+            _srgb_exposure_channel(value, exposure_ev) for value in source
+        )
+        changed_channels += sum(a != b for a, b in zip(source, transformed))
+        payload.extend(transformed)
     path.write_bytes(payload)
+    return {
+        "method": "deterministic_srgb_to_linear_multiply_to_srgb_v1",
+        "exposure_ev": float(exposure_ev),
+        "linear_multiplier": float(2.0 ** exposure_ev),
+        "changed_channel_count": int(changed_channels),
+        "channel_count": int(len(colors) * 3),
+        "canonical_rgb_authority": "rgb_uint8.bin",
+        "exported_png_role": "untransformed_ue5_diagnostic",
+    }
 
 
 def depth_stats(values):
@@ -229,6 +252,7 @@ def apply_lighting_ablation(world, actors, config):
             "variant_id": "level_baseline",
             "applied": False,
             "capture_exposure_compensation_ev": 0.0,
+            "post_read_exposure_transform_ev": 0.0,
             "before": None,
             "after": None,
         }
@@ -243,6 +267,9 @@ def apply_lighting_ablation(world, actors, config):
     exposure = float(spec.get("capture_exposure_compensation_ev", 0.0))
     if not math.isfinite(exposure) or not -5.0 <= exposure <= 5.0:
         raise RuntimeError("PAN-31 exposure compensation must be finite in [-5,5]")
+    post_read_exposure = float(spec.get("post_read_exposure_transform_ev", 0.0))
+    if not math.isfinite(post_read_exposure) or not -5.0 <= post_read_exposure <= 5.0:
+        raise RuntimeError("PAN-31 post-read exposure must be finite in [-5,5]")
     exposure_cvars_before = _exposure_cvars()
     enable_manual_pipeline = bool(spec.get("enable_manual_exposure_pipeline", False))
     if enable_manual_pipeline:
@@ -295,6 +322,7 @@ def apply_lighting_ablation(world, actors, config):
         "variant_id": variant_id,
         "applied": True,
         "capture_exposure_compensation_ev": exposure,
+        "post_read_exposure_transform_ev": post_read_exposure,
         "manual_exposure_pipeline_enabled": enable_manual_pipeline,
         "exposure_cvars_before": exposure_cvars_before,
         "exposure_cvars_after": exposure_cvars_after,
@@ -305,7 +333,7 @@ def apply_lighting_ablation(world, actors, config):
 
 def apply_capture_exposure(component, lighting_report):
     compensation = float(lighting_report["capture_exposure_compensation_ev"])
-    if lighting_report["applied"] is not True:
+    if lighting_report["applied"] is not True or compensation == 0.0:
         return {
             "manual_auto_exposure_disabled_by_project": True,
             "auto_exposure_bias_override": False,
@@ -534,7 +562,11 @@ def main():
                 raise RuntimeError(f"RGB readback failed for {name}")
             rgb_raw = face_dir / "rgb_uint8.bin"
             serialization_started = time.perf_counter()
-            write_rgb(rgb_raw, rgb_samples)
+            rgb_transform_report = write_rgb(
+                rgb_raw,
+                rgb_samples,
+                float(lighting_report["post_read_exposure_transform_ev"]),
+            )
             rgb_serialization_seconds = time.perf_counter() - serialization_started
             export_started = time.perf_counter()
             unreal.RenderingLibrary.export_render_target(
@@ -681,6 +713,7 @@ def main():
                         else None
                     ),
                     "capture_exposure": exposure_report,
+                    "rgb_post_read_exposure_transform": rgb_transform_report,
                     "rgb_uint8": {
                         **asset(rgb_raw, temporary),
                         "dtype": "uint8",

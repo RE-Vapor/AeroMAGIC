@@ -23,8 +23,8 @@ OBSERVATION_IDS = (0, 12, 24, 36, 49)
 FACE_NAMES = ("front", "back", "left", "right", "up", "down")
 VARIANTS = (
     ("baseline", "A · PAN-30 baseline"),
-    ("exposure", "B · exposure only · +1 EV"),
-    ("relight", "C · +1 EV · balanced relight"),
+    ("exposure", "B · derived exposure only · +1 EV"),
+    ("relight", "C · same +1 EV · UE5 relight"),
 )
 BACKGROUND = (13, 16, 21)
 PANEL = (24, 29, 38)
@@ -186,8 +186,8 @@ def _validate_control(evidence: Mapping[str, ReplayEvidence]) -> None:
     baseline_rows = _canonical_plan_rows(baseline.plan)
     baseline_metrics = baseline.plan["source"]["metrics"]["sha256"]
     expected_variants = {
-        "exposure": "exposure_only_ev_plus_1",
-        "relight": "balanced_relight_ev_plus_1_v2",
+        "exposure": "exposure_only_srgb_ev_plus_1_v2",
+        "relight": "balanced_relight_srgb_ev_plus_1_v3",
     }
     for name, current in evidence.items():
         if _canonical_plan_rows(current.plan) != baseline_rows:
@@ -201,8 +201,10 @@ def _validate_control(evidence: Mapping[str, ReplayEvidence]) -> None:
         spec = current.config.get("lighting_ablation")
         if not isinstance(spec, Mapping) or spec.get("variant_id") != expected_variants[name]:
             raise ValueError(f"{name} lighting variant contract differs")
-        if float(spec.get("capture_exposure_compensation_ev", 99.0)) != 1.0:
-            raise ValueError(f"{name} did not use the shared +1 EV exposure")
+        if float(spec.get("capture_exposure_compensation_ev", 99.0)) != 0.0:
+            raise ValueError(f"{name} unexpectedly changed UE capture exposure")
+        if float(spec.get("post_read_exposure_transform_ev", 99.0)) != 1.0:
+            raise ValueError(f"{name} did not use the shared deterministic +1 EV transform")
         for observation_id in OBSERVATION_IDS:
             raw = _read_json(current.run_dir / "captures" / f"{observation_id:06d}" / "raw_bundle" / "manifest.json")
             applied = raw.get("lighting_ablation")
@@ -211,8 +213,14 @@ def _validate_control(evidence: Mapping[str, ReplayEvidence]) -> None:
             faces = raw.get("faces")
             if not isinstance(faces, list) or len(faces) != 6:
                 raise ValueError(f"{name} observation {observation_id} raw faces are incomplete")
-            if any(float(face["capture_exposure"]["exposure_compensation_ev"]) != 1.0 for face in faces):
-                raise ValueError(f"{name} observation {observation_id} exposure differs across faces")
+            transforms = [face.get("rgb_post_read_exposure_transform") for face in faces]
+            if any(
+                not isinstance(transform, Mapping)
+                or float(transform.get("exposure_ev", 99.0)) != 1.0
+                or int(transform.get("changed_channel_count", 0)) <= 0
+                for transform in transforms
+            ):
+                raise ValueError(f"{name} observation {observation_id} lacks the shared effective exposure transform")
     for observation_id in OBSERVATION_IDS:
         reference_mask = baseline.masks[observation_id]
         for name in ("exposure", "relight"):

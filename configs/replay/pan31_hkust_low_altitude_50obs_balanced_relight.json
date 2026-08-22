@@ -12,5 +12,5 @@
   "replay_request_prefix": "pan31-hkust-balanced-relight",
   "preview_filename": "hkust_pan31_balanced_relight_preview.png",
   "capture_config_repo_relative": "unreal/PAN31/Config/pan31_hkust_balanced_relight.json",
-  "lighting_variant_id": "balanced_relight_ev_plus_1_v2"
+  "lighting_variant_id": "balanced_relight_srgb_ev_plus_1_v3"
 }
