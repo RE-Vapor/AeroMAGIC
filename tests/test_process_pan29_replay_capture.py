@@ -12,7 +12,10 @@ from macarons.utility.ue5_observation_contract import (
     SCHEMA_VERSION,
     write_bundle,
 )
-from scripts.process_pan29_replay_capture import process_replay_capture
+from scripts.process_pan29_replay_capture import (
+    _apply_geometry_shadow_fill,
+    process_replay_capture,
+)
 
 
 FACE_NAMES = ("front", "back", "left", "right", "up", "down")
@@ -30,6 +33,56 @@ PIONEER_FACE_ROTATIONS = {
 
 
 class ProcessPAN29ReplayCaptureTests(unittest.TestCase):
+    def test_shadow_fill_changes_only_dark_geometry_pixels(self):
+        rgb = np.asarray(
+            [
+                [[0, 0, 0], [255, 255, 255]],
+                [[10, 10, 10], [80, 80, 80]],
+            ],
+            dtype=np.uint8,
+        )
+        valid = np.asarray([[True, True], [False, True]], dtype=np.bool_)
+        face = CanonicalFace(
+            face_name="front",
+            request_id="shadow-fill-test",
+            frame_id="frame",
+            capture_timestamp_ns=1,
+            rgb_uint8=rgb,
+            depth_range_m=np.ones((2, 2), dtype=np.float32),
+            valid_mask=valid,
+            K_pixel=np.eye(3),
+            T_world_from_cam=np.eye(4),
+            image_size=(2, 2),
+        )
+        bundle = CanonicalObservationBundle(
+            schema_version=SCHEMA_VERSION,
+            request_id="shadow-fill-test",
+            frame_id="frame",
+            capture_timestamp_ns=1,
+            position_world_m=(0.0, 0.0, 0.0),
+            faces=(face,),
+            provenance={},
+        )
+
+        transformed, report = _apply_geometry_shadow_fill(
+            bundle,
+            {
+                "method": "geometry_masked_linear_toe_lift_v1",
+                "max_linear_lift": 0.006,
+                "cutoff_linear_luma": 0.18,
+                "rolloff_power": 2.0,
+            },
+        )
+
+        output = transformed.faces[0].rgb_uint8
+        self.assertTrue(np.all(output[0, 0] > rgb[0, 0]))
+        self.assertTrue(np.array_equal(output[0, 1], rgb[0, 1]))
+        self.assertTrue(np.array_equal(output[1, 0], rgb[1, 0]))
+        self.assertTrue(np.all(output[1, 1] > rgb[1, 1]))
+        self.assertEqual(report["total_no_hit_changed_pixel_count"], 0)
+        self.assertEqual(report["total_bright_region_changed_pixel_count"], 0)
+        self.assertGreater(report["total_shadow_lifted_pixel_count"], 0)
+
     def _fixture(self, root: Path):
         observation_id = 5
         source_timestamp = 1_787_242_568_309_971_778

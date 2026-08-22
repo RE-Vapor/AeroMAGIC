@@ -36,6 +36,7 @@ ERP_CONVENTION = {
 }
 POSITION_TOLERANCE_SCENE_UNITS = 2.0e-4  # 1 mm at 0.2 scene unit / metre.
 BASIS_TOLERANCE = 1.0e-5
+SHADOW_FILL_SCHEMA = "pan33.geometry-masked-shadow-fill.v1"
 
 
 def _sha256(path: Path) -> str:
@@ -168,6 +169,105 @@ def _pioneer_bundle_view(bundle: Any, scene_units_per_meter: float) -> Any:
         faces.append(replace(face, T_world_from_cam=converted))
     center = CONTRACT_TO_PIONEER @ np.asarray(bundle.position_world_m) * scene_units_per_meter
     return replace(bundle, position_world_m=tuple(center), faces=tuple(faces))
+
+
+def _srgb_to_linear(rgb: np.ndarray) -> np.ndarray:
+    values = rgb.astype(np.float64) / 255.0
+    return np.where(
+        values <= 0.04045,
+        values / 12.92,
+        ((values + 0.055) / 1.055) ** 2.4,
+    )
+
+
+def _linear_to_srgb_uint8(linear: np.ndarray) -> np.ndarray:
+    values = np.clip(linear, 0.0, 1.0)
+    encoded = np.where(
+        values <= 0.0031308,
+        12.92 * values,
+        1.055 * np.power(values, 1.0 / 2.4) - 0.055,
+    )
+    return np.rint(np.clip(encoded, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def _apply_geometry_shadow_fill(bundle: Any, spec: Any) -> tuple[Any, dict[str, Any]]:
+    if spec is None:
+        return bundle, {
+            "schema_version": SHADOW_FILL_SCHEMA,
+            "applied": False,
+            "method": None,
+            "faces": [],
+            "total_shadow_lifted_pixel_count": 0,
+            "total_shadow_lift_changed_channel_count": 0,
+        }
+    if not isinstance(spec, Mapping) or spec.get("method") != "geometry_masked_linear_toe_lift_v1":
+        raise ValueError("PAN-33 shadow-fill specification is invalid")
+    max_lift = float(spec.get("max_linear_lift", -1.0))
+    cutoff = float(spec.get("cutoff_linear_luma", -1.0))
+    power = float(spec.get("rolloff_power", -1.0))
+    if (
+        not math.isfinite(max_lift)
+        or not 0.0 < max_lift <= 0.1
+        or not math.isfinite(cutoff)
+        or not 0.0 < cutoff < 1.0
+        or not math.isfinite(power)
+        or not 1.0 <= power <= 8.0
+    ):
+        raise ValueError("PAN-33 shadow-fill parameters are out of range")
+
+    faces = []
+    reports = []
+    total_lifted = 0
+    total_channels = 0
+    for face in bundle.faces:
+        rgb = np.asarray(face.rgb_uint8, dtype=np.uint8)
+        valid = np.asarray(face.valid_mask, dtype=np.bool_)
+        linear = _srgb_to_linear(rgb)
+        luma = 0.2126 * linear[..., 0] + 0.7152 * linear[..., 1] + 0.0722 * linear[..., 2]
+        eligible = valid & (luma < cutoff)
+        weight = np.zeros_like(luma, dtype=np.float64)
+        weight[eligible] = np.power(1.0 - luma[eligible] / cutoff, power)
+        lifted = np.clip(linear + max_lift * weight[..., None], 0.0, 1.0)
+        transformed = rgb.copy()
+        transformed[eligible] = _linear_to_srgb_uint8(lifted[eligible])
+        changed = transformed != rgb
+        changed_pixels = np.any(changed, axis=2)
+        no_hit_changed = int(np.count_nonzero(changed_pixels & ~valid))
+        bright_changed = int(np.count_nonzero(changed_pixels & valid & ~eligible))
+        if no_hit_changed != 0 or bright_changed != 0:
+            raise AssertionError("PAN-33 shadow fill escaped its geometry/shadow mask")
+        lifted_count = int(np.count_nonzero(changed_pixels & eligible))
+        channel_count = int(np.count_nonzero(changed))
+        total_lifted += lifted_count
+        total_channels += channel_count
+        reports.append(
+            {
+                "face_name": face.face_name,
+                "geometry_valid_pixel_count": int(np.count_nonzero(valid)),
+                "no_hit_pixel_count": int(valid.size - np.count_nonzero(valid)),
+                "eligible_shadow_pixel_count": int(np.count_nonzero(eligible)),
+                "shadow_lifted_pixel_count": lifted_count,
+                "shadow_lift_changed_channel_count": channel_count,
+                "no_hit_changed_pixel_count": no_hit_changed,
+                "bright_region_changed_pixel_count": bright_changed,
+            }
+        )
+        faces.append(replace(face, rgb_uint8=transformed))
+    if total_lifted <= 0 or total_channels <= 0:
+        raise ValueError("PAN-33 shadow-fill treatment changed no geometry pixels")
+    return replace(bundle, faces=tuple(faces)), {
+        "schema_version": SHADOW_FILL_SCHEMA,
+        "applied": True,
+        "method": "geometry_masked_linear_toe_lift_v1",
+        "max_linear_lift": max_lift,
+        "cutoff_linear_luma": cutoff,
+        "rolloff_power": power,
+        "faces": reports,
+        "total_shadow_lifted_pixel_count": total_lifted,
+        "total_shadow_lift_changed_channel_count": total_channels,
+        "total_no_hit_changed_pixel_count": int(sum(row["no_hit_changed_pixel_count"] for row in reports)),
+        "total_bright_region_changed_pixel_count": int(sum(row["bright_region_changed_pixel_count"] for row in reports)),
+    }
 
 
 def _validate_replay_source(
@@ -327,6 +427,16 @@ def process_replay_capture(
                 f"basis: {error}"
             )
 
+    lighting_ablation = raw.get("lighting_ablation")
+    if lighting_ablation is not None and not isinstance(lighting_ablation, Mapping):
+        raise ValueError("raw capture lacks lighting-ablation provenance")
+    pioneer_view, shadow_fill_report = _apply_geometry_shadow_fill(
+        pioneer_view,
+        None
+        if lighting_ablation is None
+        else lighting_ablation.get("post_read_shadow_lift"),
+    )
+
     panorama = cubemap_rgb_to_equirectangular(pioneer_view, output_height=erp_height)
     repeated = cubemap_rgb_to_equirectangular(pioneer_view, output_height=erp_height)
     if not np.array_equal(panorama, repeated):
@@ -370,6 +480,7 @@ def process_replay_capture(
             ),
             "planner_input_unchanged": True,
             "ue5_role": "post_run_visualization_only",
+            "shadow_fill": shadow_fill_report,
             "source_semantic_validation": {
                 "schema_version": SOURCE_SEMANTIC_SCHEMA,
                 "result": "PASS",

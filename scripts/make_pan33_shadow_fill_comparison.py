@@ -25,6 +25,7 @@ from scripts.make_pan31_lighting_comparison import (
     _load_replay,
     _sha256,
 )
+from scripts.process_pan29_replay_capture import SHADOW_FILL_SCHEMA
 
 
 VARIANTS = (
@@ -107,26 +108,63 @@ def _validate_control(evidence: Mapping[str, ReplayEvidence]) -> dict[str, float
             faces = raw.get("faces")
             if not isinstance(faces, list) or len(faces) != 6:
                 raise ValueError(f"{name} observation {observation_id} raw faces are incomplete")
-            if name != "baseline":
-                for face in faces:
-                    transform = face.get("rgb_post_read_exposure_transform")
-                    if (
-                        not isinstance(transform, Mapping)
-                        or transform.get("shadow_lift") != shadow
-                        or int(transform.get("shadow_lift_changed_channel_count", 0)) <= 0
-                        or int(transform.get("shadow_lifted_pixel_count", 0)) <= 0
-                        or int(transform.get("shadow_lifted_pixel_count", 0))
-                        > int(transform.get("shadow_lift_geometry_valid_pixel_count", -1))
-                        or int(transform.get("shadow_lift_geometry_valid_pixel_count", -1))
-                        + int(transform.get("shadow_lift_no_hit_pixel_count", -1))
-                        != 256 * 256
-                        or int(transform.get("shadow_lift_no_hit_changed_pixel_count", -1)) != 0
-                        or int(transform.get("shadow_lift_bright_region_changed_pixel_count", -1)) != 0
-                    ):
-                        raise ValueError(
-                            f"{name} observation {observation_id} face {face.get('face_name')} "
-                            "violates geometry-only shadow-fill provenance"
-                        )
+            receipt = _read_json(
+                current.run_dir
+                / "processed"
+                / f"{observation_id:06d}"
+                / "receipt.json"
+            )
+            report = receipt.get("shadow_fill")
+            if name == "baseline":
+                if report is not None and report.get("applied") is not False:
+                    raise ValueError(
+                        f"baseline observation {observation_id} unexpectedly applies shadow fill"
+                    )
+                continue
+            if (
+                not isinstance(report, Mapping)
+                or report.get("schema_version") != SHADOW_FILL_SCHEMA
+                or report.get("applied") is not True
+                or report.get("method") != shadow["method"]
+                or float(report.get("max_linear_lift", -1.0))
+                != float(shadow["max_linear_lift"])
+                or float(report.get("cutoff_linear_luma", -1.0))
+                != float(shadow["cutoff_linear_luma"])
+                or float(report.get("rolloff_power", -1.0))
+                != float(shadow["rolloff_power"])
+                or int(report.get("total_shadow_lifted_pixel_count", 0)) <= 0
+                or int(report.get("total_shadow_lift_changed_channel_count", 0)) <= 0
+                or int(report.get("total_no_hit_changed_pixel_count", -1)) != 0
+                or int(report.get("total_bright_region_changed_pixel_count", -1)) != 0
+            ):
+                raise ValueError(
+                    f"{name} observation {observation_id} violates shadow-fill provenance"
+                )
+            report_faces = report.get("faces")
+            if (
+                not isinstance(report_faces, list)
+                or [face.get("face_name") for face in report_faces]
+                != [face.get("face_name") for face in faces]
+            ):
+                raise ValueError(
+                    f"{name} observation {observation_id} shadow-fill faces differ"
+                )
+            for face in report_faces:
+                valid = int(face.get("geometry_valid_pixel_count", -1))
+                no_hit = int(face.get("no_hit_pixel_count", -1))
+                eligible = int(face.get("eligible_shadow_pixel_count", -1))
+                lifted = int(face.get("shadow_lifted_pixel_count", -1))
+                if (
+                    valid + no_hit != 256 * 256
+                    or not 0 <= lifted <= eligible <= valid
+                    or int(face.get("shadow_lift_changed_channel_count", -1)) < lifted
+                    or int(face.get("no_hit_changed_pixel_count", -1)) != 0
+                    or int(face.get("bright_region_changed_pixel_count", -1)) != 0
+                ):
+                    raise ValueError(
+                        f"{name} observation {observation_id} face {face.get('face_name')} "
+                        "violates the canonical geometry mask"
+                    )
 
     if not 0.0 < strengths["light"] < strengths["medium"]:
         raise ValueError("PAN-33 shadow-fill strengths are not ordered")

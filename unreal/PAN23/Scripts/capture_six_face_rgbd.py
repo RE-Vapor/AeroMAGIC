@@ -147,65 +147,25 @@ def _linear_to_srgb_byte(value):
     return min(255, max(0, int(round(255.0 * encoded))))
 
 
-def write_rgb(path, colors, exposure_ev=0.0, shadow_lift=None, valid_mask=None):
-    if valid_mask is not None and len(valid_mask) != len(colors):
-        raise RuntimeError("RGB and geometry mask lengths differ")
+def write_rgb(path, colors, exposure_ev=0.0):
     payload = bytearray()
     changed_channels = 0
-    exposure_changed_channels = 0
-    shadow_changed_channels = 0
-    shadow_lifted_pixels = 0
-    shadow_no_hit_changed_pixels = 0
-    shadow_bright_changed_pixels = 0
-    geometry_valid_pixels = (
-        sum(1 for value in valid_mask if bool(value)) if valid_mask is not None else 0
-    )
     exposure_multiplier = 2.0 ** exposure_ev
-    max_lift = float(shadow_lift["max_linear_lift"]) if shadow_lift else 0.0
-    cutoff = float(shadow_lift["cutoff_linear_luma"]) if shadow_lift else 1.0
-    power = float(shadow_lift["rolloff_power"]) if shadow_lift else 1.0
-    for index, color in enumerate(colors):
+    for color in colors:
         source = (int(color.r), int(color.g), int(color.b))
         exposed_linear = tuple(
             min(1.0, max(0.0, _srgb_to_linear(value) * exposure_multiplier))
             for value in source
         )
-        exposure_only = tuple(_linear_to_srgb_byte(value) for value in exposed_linear)
-        exposure_changed_channels += sum(a != b for a, b in zip(source, exposure_only))
-        transformed = exposure_only
-        if shadow_lift and valid_mask is not None and bool(valid_mask[index]):
-            luma = (
-                0.2126 * exposed_linear[0]
-                + 0.7152 * exposed_linear[1]
-                + 0.0722 * exposed_linear[2]
-            )
-            if luma < cutoff:
-                weight = (1.0 - luma / cutoff) ** power
-                lifted_linear = tuple(min(1.0, value + max_lift * weight) for value in exposed_linear)
-                transformed = tuple(_linear_to_srgb_byte(value) for value in lifted_linear)
-                shadow_delta = sum(a != b for a, b in zip(exposure_only, transformed))
-                shadow_changed_channels += shadow_delta
-                shadow_lifted_pixels += int(shadow_delta > 0)
-            elif transformed != exposure_only:
-                shadow_bright_changed_pixels += 1
-        elif shadow_lift and transformed != exposure_only:
-            shadow_no_hit_changed_pixels += 1
+        transformed = tuple(_linear_to_srgb_byte(value) for value in exposed_linear)
         changed_channels += sum(a != b for a, b in zip(source, transformed))
         payload.extend(transformed)
     path.write_bytes(payload)
     return {
-        "method": "deterministic_srgb_exposure_plus_geometry_masked_linear_toe_lift_v2",
+        "method": "deterministic_srgb_to_linear_multiply_to_srgb_v1",
         "exposure_ev": float(exposure_ev),
         "linear_multiplier": float(exposure_multiplier),
         "changed_channel_count": int(changed_channels),
-        "exposure_changed_channel_count": int(exposure_changed_channels),
-        "shadow_lift_changed_channel_count": int(shadow_changed_channels),
-        "shadow_lifted_pixel_count": int(shadow_lifted_pixels),
-        "shadow_lift_geometry_valid_pixel_count": int(geometry_valid_pixels),
-        "shadow_lift_no_hit_pixel_count": int(len(colors) - geometry_valid_pixels),
-        "shadow_lift_no_hit_changed_pixel_count": int(shadow_no_hit_changed_pixels),
-        "shadow_lift_bright_region_changed_pixel_count": int(shadow_bright_changed_pixels),
-        "shadow_lift": shadow_lift,
         "channel_count": int(len(colors) * 3),
         "canonical_rgb_authority": "rgb_uint8.bin",
         "exported_png_role": "untransformed_ue5_diagnostic",
@@ -758,8 +718,6 @@ def main():
                 rgb_raw,
                 rgb_samples,
                 float(lighting_report["post_read_exposure_transform_ev"]),
-                lighting_report.get("post_read_shadow_lift"),
-                mask_values,
             )
             rgb_serialization_seconds = time.perf_counter() - serialization_started
             face_reports.append(
