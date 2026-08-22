@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate five validated PAN-29 replay receipts with fresh source hashes."""
+"""Aggregate five validated same-pose UE5 replay receipts."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-OBSERVATION_IDS = (0, 5, 10, 14, 19)
 FACE_NAMES = ("front", "back", "left", "right", "up", "down")
 REQUEST_SCHEMA = "pan15.capture-request.v1"
 RAW_SCHEMA = "pan15.ue5-raw-rgbd.v1"
@@ -690,8 +689,13 @@ def finalize_replay(
     plan = _read_json(plan_path)
     if plan.get("schema_version") != "pan29.ue5-postrun-replay.v1":
         raise ValueError("unexpected PAN-29 replay plan schema")
-    if tuple(plan.get("selected_bundle_ids") or ()) != OBSERVATION_IDS:
-        raise ValueError("PAN-29 replay plan does not select the exact five IDs")
+    observation_ids = tuple(int(value) for value in plan.get("selected_bundle_ids") or ())
+    if (
+        len(observation_ids) != 5
+        or tuple(sorted(observation_ids)) != observation_ids
+        or len(set(observation_ids)) != 5
+    ):
+        raise ValueError("replay plan must select five unique, increasing IDs")
     if plan.get("planner_input_unchanged") is not True:
         raise ValueError("PAN-29 replay plan must keep Planner input unchanged")
     _verify_source(plan)
@@ -717,14 +721,14 @@ def finalize_replay(
     by_id = {
         int(row["observation_id"]): row for row in plan_rows if isinstance(row, Mapping)
     }
-    if tuple(by_id) != OBSERVATION_IDS or len(by_id) != len(plan_rows):
+    if tuple(by_id) != observation_ids or len(by_id) != len(plan_rows):
         raise ValueError(
             "PAN-29 replay plan observation IDs are duplicate or out of order"
         )
 
     receipts = []
     actual_timestamps: set[int] = set()
-    for observation_id in OBSERVATION_IDS:
+    for observation_id in observation_ids:
         directory = processed_root / f"{observation_id:06d}"
         receipt_path = directory / "receipt.json"
         receipt = _read_json(receipt_path)
@@ -897,11 +901,11 @@ def finalize_replay(
 
     return {
         "schema_version": "pan29.ue5-postrun-replay-result.v1",
-        "task": "PAN-29",
+        "task": plan.get("task", "PAN-29"),
         "result": "PASS",
         "artifact_role": "post_run_visualization_only",
         "planner_input_unchanged": True,
-        "observation_ids": list(OBSERVATION_IDS),
+        "observation_ids": list(observation_ids),
         "replay_count": len(receipts),
         "out_of_pan13_fly_policy_ids": [
             row["observation_id"]
@@ -954,7 +958,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     temporary.replace(output)
     print(
         json.dumps(
-            {"result": "PASS", "replay_count": len(OBSERVATION_IDS)}, sort_keys=True
+            {"result": "PASS", "replay_count": int(result["replay_count"])}, sort_keys=True
         )
     )
     return 0

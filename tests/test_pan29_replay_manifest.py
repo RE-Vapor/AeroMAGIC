@@ -25,13 +25,13 @@ EXPECTED_WORLD_FROM_CAMERA_ROTATIONS = {
 
 
 class PAN29ReplayManifestTests(unittest.TestCase):
-    def _fixture(self, root: Path):
+    def _fixture(self, root: Path, observation_count: int = 20):
         capture = root / "memory" / "training" / "0"
         frames = capture / "frames"
         images = capture / "imgs"
         bundles = []
         positions = []
-        for bundle_id in range(20):
+        for bundle_id in range(observation_count):
             frame_dir = frames / f"{bundle_id:06d}"
             image_dir = images / f"{bundle_id:06d}"
             frame_dir.mkdir(parents=True)
@@ -94,6 +94,9 @@ class PAN29ReplayManifestTests(unittest.TestCase):
             "capture_dir": str(frames),
             "scene_units_per_meter": 0.2,
             "run": {
+                "debug_profile": (
+                    "pioneer-20" if observation_count == 20 else "pioneer-low-altitude-50"
+                ),
                 "planning_observation_mode": "cubemap6",
                 "depth_source": "GT",
                 "pioneer_planner_state_mode": "position_only",
@@ -101,10 +104,13 @@ class PAN29ReplayManifestTests(unittest.TestCase):
                 "pioneer_cubemap_rig_frame": "world",
                 "pioneer_cubemap_extrinsics_version": "pytorch3d-world-axes-v1",
             },
-            "trajectory": {"observation_count": 20, "positions": positions},
+            "trajectory": {
+                "observation_count": observation_count,
+                "positions": positions,
+            },
             "pioneer_observation": {
-                "bundle_count": 20,
-                "real_face_render_count": 120,
+                "bundle_count": observation_count,
+                "real_face_render_count": 6 * observation_count,
                 "bundles": bundles,
             },
         }
@@ -135,9 +141,14 @@ class PAN29ReplayManifestTests(unittest.TestCase):
                     "scene=HKUST",
                     "git_commit=d015da4d6dc2dce78da75f9627a01be6dca71663",
                     f"config_sha256={config_sha}",
-                    "debug_profile=pioneer-20",
-                    "expected_observations=20",
-                    "expected_real_face_renders=120",
+                    "debug_profile="
+                    + (
+                        "pioneer-20"
+                        if observation_count == 20
+                        else "pioneer-low-altitude-50"
+                    ),
+                    f"expected_observations={observation_count}",
+                    f"expected_real_face_renders={6 * observation_count}",
                     "planner_state_mode=position_only",
                     "planner_state_dimension=3",
                     "cubemap_rig_frame=world",
@@ -257,11 +268,40 @@ class PAN29ReplayManifestTests(unittest.TestCase):
                 for artifact in rows[0]["source_artifacts"][group]:
                     self.assertEqual(len(artifact["sha256"]), 64)
 
+    def test_builds_pan30_selection_from_fifty_observation_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metrics, config, run_manifest, capture, policy, lmdb, preview = (
+                self._fixture(root, observation_count=50)
+            )
+            selected = (0, 12, 24, 36, 49)
+            payload = build_replay_manifest(
+                metrics_path=metrics,
+                source_config_path=config,
+                source_run_manifest_path=run_manifest,
+                capture_root=capture,
+                spatial_policy_path=policy,
+                source_lmdb_path=lmdb,
+                original_preview_path=preview,
+                bundle_ids=selected,
+                source_registry_id="PAN-30-PIONEER-HKUST-LOWALT-50OBS",
+                task="PAN-30",
+                replay_request_prefix="pan30-hkust-lowalt50",
+            )
+
+            self.assertEqual(payload["task"], "PAN-30")
+            self.assertEqual(payload["selected_bundle_ids"], list(selected))
+            self.assertEqual(payload["source"]["observation_count"], 50)
+            self.assertEqual(
+                payload["observations"][-1]["replay_request_id"],
+                "pan30-hkust-lowalt50-000049",
+            )
+
     def test_rejects_noncanonical_selection_and_manifest_hash_mismatch(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             metrics, config, run_manifest, capture, policy, lmdb, preview = self._fixture(root)
-            with self.assertRaisesRegex(ValueError, "exactly"):
+            with self.assertRaisesRegex(ValueError, "five unique"):
                 build_replay_manifest(
                     metrics_path=metrics,
                     source_config_path=config,

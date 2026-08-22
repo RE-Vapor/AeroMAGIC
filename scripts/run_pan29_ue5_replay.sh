@@ -10,12 +10,52 @@ SOURCE_LMDB=/home/ubuntu/Projects/Pioneer/experiments/runs/integration-all-exper
 SOURCE_PREVIEW="$SOURCE_RUN/hkust_position_only_20obs_preview.png"
 SOURCE_PREVIEW_SIDECAR="${SOURCE_PREVIEW%.png}.json"
 SOURCE_REGISTRY_ID=PAN-11-PIONEER-HKUST-POSITION-ONLY-20OBS-20260821
+SOURCE_CONFIG=/home/ubuntu/Projects/Pioneer/repository/configs/test/test_pioneer_hkust_pan11_position_only_20obs_a1_config.json
 SPATIAL_POLICY=/home/ubuntu/Projects/Pioneer/experiments/pan-13-hkust/ue_derived_inspection/hkust_spatial_policy.json
 UE_INSPECTION=/home/ubuntu/Projects/Pioneer/experiments/pan-13-hkust/ue_derived_inspection/ue_derived_inspection.json
 UE_PROJECT=/home/ubuntu/Projects/Pioneer/experiments/pan-13-hkust/ue_project/HKUSTPan13/HKUSTPan13.uproject
 UE_DEFAULT_ENGINE=/home/ubuntu/Projects/Pioneer/experiments/pan-13-hkust/ue_project/HKUSTPan13/Config/DefaultEngine.ini
 UE_LEVEL=/home/ubuntu/Projects/Pioneer/experiments/pan-13-hkust/ue_project/HKUSTPan13/Content/PAN13_Derived/HKUST_ZUp_QA.umap
 OBSERVATION_IDS=(0 5 10 14 19)
+OBSERVATION_IDS_CSV=0,5,10,14,19
+REPLAY_TASK=PAN-29
+REPLAY_REQUEST_PREFIX=pan29-hkust-gt20obs
+PREVIEW_FILENAME=hkust_gt20obs_pan29_ue5_replay_preview.png
+
+load_replay_spec() {
+  local spec="$1" python_bin="$2"
+  local values
+  mapfile -t values < <("$python_bin" - "$spec" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1]))
+assert p.get("schema_version")=="pioneer.ue5-postrun-replay-source.v1"
+ids=p.get("observation_ids")
+assert isinstance(ids,list) and len(ids)==5 and ids==sorted(set(ids)) and ids[0]>=0
+for key in (
+ "task","source_run","source_metrics","source_capture","source_lmdb",
+ "source_preview","source_registry_id","source_config","replay_request_prefix",
+ "preview_filename",
+):
+ value=p.get(key); assert isinstance(value,str) and value
+ print(value)
+print(",".join(str(x) for x in ids))
+PY
+  )
+  [[ "${#values[@]}" -eq 11 ]] || return 2
+  REPLAY_TASK="${values[0]}"
+  SOURCE_RUN="${values[1]}"
+  SOURCE_METRICS="${values[2]}"
+  SOURCE_CAPTURE="${values[3]}"
+  SOURCE_LMDB="${values[4]}"
+  SOURCE_PREVIEW="${values[5]}"
+  SOURCE_REGISTRY_ID="${values[6]}"
+  SOURCE_CONFIG="${values[7]}"
+  REPLAY_REQUEST_PREFIX="${values[8]}"
+  PREVIEW_FILENAME="${values[9]}"
+  OBSERVATION_IDS_CSV="${values[10]}"
+  IFS=',' read -r -a OBSERVATION_IDS <<< "$OBSERVATION_IDS_CSV"
+  SOURCE_PREVIEW_SIDECAR="${SOURCE_PREVIEW%.png}.json"
+}
 
 manifest_value() {
   local key="$1" manifest="$2"
@@ -37,11 +77,15 @@ verify_snapshot() {
   [[ "$(sha256sum "$repo_root/scripts/process_pan29_replay_capture.py" | awk '{print $1}')" == "$(manifest_value process_script_sha256 "$manifest")" ]] || return 2
   [[ "$(sha256sum "$repo_root/scripts/make_pan29_preview.py" | awk '{print $1}')" == "$(manifest_value preview_script_sha256 "$manifest")" ]] || return 2
   [[ "$(sha256sum "$run_dir/replay_plan.json" | awk '{print $1}')" == "$(manifest_value replay_plan_sha256 "$manifest")" ]] || return 2
-  "$python_bin" - "$run_dir/replay_plan.json" <<'PY'
+  if [[ -f "$run_dir/replay_source_spec.json" ]]; then
+    [[ "$(sha256sum "$run_dir/replay_source_spec.json" | awk '{print $1}')" == "$(manifest_value replay_source_spec_sha256 "$manifest")" ]] || return 2
+  fi
+  "$python_bin" - "$run_dir/replay_plan.json" "$OBSERVATION_IDS_CSV" <<'PY'
 import hashlib,json,sys
 from pathlib import Path
 plan=json.load(open(sys.argv[1]))
-assert plan["selected_bundle_ids"] == [0,5,10,14,19]
+expected=[int(x) for x in sys.argv[2].split(",")]
+assert plan["selected_bundle_ids"] == expected
 for key in ("config","metrics"):
     record=plan["source"][key]; path=Path(record["path"])
     assert hashlib.sha256(path.read_bytes()).hexdigest()==record["sha256"]
@@ -55,6 +99,9 @@ PY
 run_inside_tmux() {
   local gpu="$1" run_dir="$2" python_bin="$3" repo_root="$4"
   local status="$run_dir/status.txt"
+  if [[ -f "$run_dir/replay_source_spec.json" ]]; then
+    load_replay_spec "$run_dir/replay_source_spec.json" "$python_bin"
+  fi
   if verify_snapshot "$run_dir" "$repo_root" "$python_bin"; then
     printf 'snapshot_integrity_preflight=PASS\n' >> "$status"
   else
@@ -176,21 +223,22 @@ run_inside_tmux() {
       "$python_bin" "$repo_root/scripts/make_pan29_preview.py" \
         --metrics "$SOURCE_METRICS" \
         --replay-result "$run_dir/replay_result.json" \
-        --output "$run_dir/preview/hkust_gt20obs_pan29_ue5_replay_preview.png" \
+        --output "$run_dir/preview/$PREVIEW_FILENAME" \
         > "$run_dir/preview.log" 2>&1
       local preview_exit=$?
       set -e
       if (( preview_exit == 0 )); then
         set +e
-        "$python_bin" - "$run_dir/preview/hkust_gt20obs_pan29_ue5_replay_preview.png" <<'PY'
+        "$python_bin" - "$run_dir/preview/$PREVIEW_FILENAME" "$OBSERVATION_IDS_CSV" <<'PY'
 import hashlib,json,sys
 from pathlib import Path
 png=Path(sys.argv[1]).resolve(); sidecar=png.with_suffix(".json"); commit=png.with_suffix(".commit.json")
+expected=[int(x) for x in sys.argv[2].split(",")]
 record=json.load(open(commit))
 assert hashlib.sha256(png.read_bytes()).hexdigest()==record["preview_sha256"]
 assert hashlib.sha256(sidecar.read_bytes()).hexdigest()==record["sidecar_sha256"]
 payload=json.load(open(sidecar))
-assert payload["summary"]["displayed_observation_ids"]==[0,5,10,14,19]
+assert payload["summary"]["displayed_observation_ids"]==expected
 assert payload["summary"]["planner_input_unchanged"] is True
 PY
         preview_exit=$?
@@ -226,15 +274,22 @@ if [[ "${1:-}" == "--inside-tmux" ]]; then
   exit $?
 fi
 
-if [[ $# -ne 3 ]]; then
-  printf 'usage: %s SESSION GPU RUN_DIR\n' "$0" >&2
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+  printf 'usage: %s SESSION GPU RUN_DIR [REPLAY_SOURCE_SPEC]\n' "$0" >&2
   exit 2
 fi
 session="$1"
 gpu="$2"
 run_dir="$3"
+source_spec="${4:-}"
 python_bin="${PIONEER_PYTHON:-$DEFAULT_PYTHON}"
 repo_root="$(git rev-parse --show-toplevel)"
+
+if [[ -n "$source_spec" ]]; then
+  source_spec="$(cd "$(dirname "$source_spec")" && pwd)/$(basename "$source_spec")"
+  [[ -f "$source_spec" ]] || { printf 'missing replay source spec: %s\n' "$source_spec" >&2; exit 2; }
+  load_replay_spec "$source_spec" "$python_bin"
+fi
 
 [[ "$session" =~ ^[A-Za-z0-9._-]+$ ]] || { printf 'invalid tmux session name\n' >&2; exit 2; }
 [[ "$gpu" =~ ^[0-9]+$ ]] || { printf 'GPU must be a non-negative integer\n' >&2; exit 2; }
@@ -242,19 +297,23 @@ repo_root="$(git rev-parse --show-toplevel)"
 tmux has-session -t "$session" 2>/dev/null && { printf 'tmux session already exists: %s\n' "$session" >&2; exit 2; }
 [[ ! -e "$run_dir" ]] || { printf 'refusing to reuse run path: %s\n' "$run_dir" >&2; exit 2; }
 
-source_config="$repo_root/configs/test/test_pioneer_hkust_pan11_position_only_20obs_a1_config.json"
+source_config="$SOURCE_CONFIG"
 source_manifest="$SOURCE_RUN/manifest.txt"
 capture_config_source="$repo_root/unreal/PAN29/Config/pan29_hkust_replay.json"
 for required in "$python_bin" "$UE_COMMAND" "$source_config" "$source_manifest" "$SOURCE_METRICS" "$SOURCE_CAPTURE/frames" "$SOURCE_LMDB/data.mdb" "$SOURCE_PREVIEW" "$SOURCE_PREVIEW_SIDECAR" "$SPATIAL_POLICY" "$UE_INSPECTION" "$UE_PROJECT" "$UE_DEFAULT_ENGINE" "$UE_LEVEL" "$capture_config_source"; do
-  [[ -e "$required" ]] || { printf 'missing PAN-29 input: %s\n' "$required" >&2; exit 2; }
+  [[ -e "$required" ]] || { printf 'missing replay input: %s\n' "$required" >&2; exit 2; }
 done
 
 gpu_used_mib="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i "$gpu" | tr -d ' ')"
 [[ "$gpu_used_mib" =~ ^[0-9]+$ ]] || { printf 'could not read GPU memory use\n' >&2; exit 2; }
-(( gpu_used_mib < 2048 )) || { printf 'GPU %s is already using %s MiB; refusing PAN-29 launch\n' "$gpu" "$gpu_used_mib" >&2; exit 2; }
+(( gpu_used_mib < 2048 )) || { printf 'GPU %s is already using %s MiB; refusing replay launch\n' "$gpu" "$gpu_used_mib" >&2; exit 2; }
 
 mkdir -p "$run_dir"
 run_dir="$(cd "$run_dir" && pwd)"
+if [[ -n "$source_spec" ]]; then
+  cp -p -- "$source_spec" "$run_dir/replay_source_spec.json"
+  load_replay_spec "$run_dir/replay_source_spec.json" "$python_bin"
+fi
 "$python_bin" - "$capture_config_source" "$run_dir/capture_config.json" "$gpu" <<'PY'
 import json,sys
 source,output,gpu=sys.argv[1],sys.argv[2],int(sys.argv[3])
@@ -271,18 +330,23 @@ PY
   --spatial-policy "$SPATIAL_POLICY" \
   --source-lmdb "$SOURCE_LMDB" \
   --original-preview "$SOURCE_PREVIEW" \
-  --bundle-ids 0,5,10,14,19 \
+  --bundle-ids "$OBSERVATION_IDS_CSV" \
   --source-registry-id "$SOURCE_REGISTRY_ID" \
+  --task "$REPLAY_TASK" \
+  --replay-request-prefix "$REPLAY_REQUEST_PREFIX" \
   --output "$run_dir/replay_plan.json"
 
 commit_sha="$(git -C "$repo_root" rev-parse HEAD)"
 {
   printf 'schema_version=pan29.ue5-postrun-run.v1\n'
-  printf 'task=PAN-29\n'
+  printf 'task=%s\n' "$REPLAY_TASK"
   printf 'git_commit=%s\n' "$commit_sha"
   printf 'branch=%s\n' "$(git -C "$repo_root" branch --show-current)"
   printf 'gpu_index=%s\n' "$gpu"
-  printf 'source_scientific_commit=d015da4d6dc2dce78da75f9627a01be6dca71663\n'
+  printf 'source_scientific_commit=%s\n' "$(manifest_value git_commit "$source_manifest")"
+  if [[ -f "$run_dir/replay_source_spec.json" ]]; then
+    printf 'replay_source_spec_sha256=%s\n' "$(sha256sum "$run_dir/replay_source_spec.json" | awk '{print $1}')"
+  fi
   printf 'source_config_sha256=%s\n' "$(sha256sum "$source_config" | awk '{print $1}')"
   printf 'source_metrics_sha256=%s\n' "$(sha256sum "$SOURCE_METRICS" | awk '{print $1}')"
   printf 'source_lmdb_data_sha256=%s\n' "$(sha256sum "$SOURCE_LMDB/data.mdb" | awk '{print $1}')"
@@ -298,7 +362,7 @@ commit_sha="$(git -C "$repo_root" rev-parse HEAD)"
   printf 'ue_level=%s\nue_level_sha256=%s\n' "$UE_LEVEL" "$(sha256sum "$UE_LEVEL" | awk '{print $1}')"
   printf 'ue_inspection_sha256=%s\n' "$(sha256sum "$UE_INSPECTION" | awk '{print $1}')"
   printf 'spatial_policy_sha256=%s\n' "$(sha256sum "$SPATIAL_POLICY" | awk '{print $1}')"
-  printf 'replay_observation_ids=[0,5,10,14,19]\n'
+  printf 'replay_observation_ids=[%s]\n' "$OBSERVATION_IDS_CSV"
   printf 'planner_input_unchanged=true\nue5_role=post_run_visualization_only\n'
   printf 'started_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'tmux_session=%s\n' "$session"
@@ -308,4 +372,4 @@ printf 'started_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$run_dir/status
 printf -v tmux_command '%q ' "$repo_root/scripts/run_pan29_ue5_replay.sh" \
   --inside-tmux "$gpu" "$run_dir" "$python_bin" "$repo_root"
 tmux new-session -d -s "$session" -c "$repo_root" "$tmux_command"
-printf 'started PAN-29 tmux session %s; artifacts: %s\n' "$session" "$run_dir"
+printf 'started %s tmux session %s; artifacts: %s\n' "$REPLAY_TASK" "$session" "$run_dir"

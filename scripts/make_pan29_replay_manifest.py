@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze five PAN-11 observations into a PAN-29 UE5 replay plan."""
+"""Freeze five PIONEER observations into a same-pose UE5 replay plan."""
 
 from __future__ import annotations
 
@@ -290,6 +290,8 @@ def build_replay_manifest(
     original_preview_path: Path,
     bundle_ids: Sequence[int],
     source_registry_id: str,
+    task: str = "PAN-29",
+    replay_request_prefix: str = "pan29-hkust-gt20obs",
 ) -> dict[str, Any]:
     """Validate and hash-bind the exact source observations to replay."""
 
@@ -301,10 +303,17 @@ def build_replay_manifest(
     source_lmdb_path = Path(source_lmdb_path).expanduser().resolve()
     original_preview_path = Path(original_preview_path).expanduser().resolve()
     selected = tuple(int(value) for value in bundle_ids)
-    if selected != BUNDLE_IDS:
-        raise ValueError(f"PAN-29 requires exactly bundle IDs {list(BUNDLE_IDS)}")
+    if (
+        len(selected) != 5
+        or tuple(sorted(selected)) != selected
+        or len(set(selected)) != len(selected)
+        or selected[0] < 0
+    ):
+        raise ValueError("UE5 replay requires five unique, increasing bundle IDs")
     if not source_registry_id.strip():
         raise ValueError("source_registry_id must be non-empty")
+    if not task.strip() or not replay_request_prefix.strip():
+        raise ValueError("task and replay_request_prefix must be non-empty")
 
     metrics = _read_json(metrics_path)
     config = _read_json(source_config_path)
@@ -321,12 +330,14 @@ def build_replay_manifest(
         raise ValueError("source config SHA256 does not match the run manifest")
     if run_manifest.get("git_commit", "") == "" or len(run_manifest["git_commit"]) != 40:
         raise ValueError("source run manifest must contain a full git_commit")
-    if run_manifest.get("debug_profile") != "pioneer-20":
-        raise ValueError("source run must use debug_profile=pioneer-20")
-    if int(run_manifest.get("expected_observations", -1)) != 20:
-        raise ValueError("source run must declare 20 observations")
-    if int(run_manifest.get("expected_real_face_renders", -1)) != 120:
-        raise ValueError("source run must declare 120 real face renders")
+    expected_observations = int(run_manifest.get("expected_observations", -1))
+    if expected_observations <= 0:
+        raise ValueError("source run must declare a positive observation count")
+    expected_real_faces = 6 * expected_observations
+    if int(run_manifest.get("expected_real_face_renders", -1)) != expected_real_faces:
+        raise ValueError("source run real-face declaration must equal six times observations")
+    if selected[-1] >= expected_observations:
+        raise ValueError("selected bundle ID exceeds the source observation count")
 
     if metrics.get("planner") != "pioneer" or metrics.get("scene") != "HKUST":
         raise ValueError("PAN-29 source metrics must be the HKUST PIONEER run")
@@ -338,6 +349,8 @@ def build_replay_manifest(
     assert isinstance(run, Mapping)
     assert isinstance(trajectory, Mapping)
     assert isinstance(pioneer, Mapping)
+    if run.get("debug_profile") != run_manifest.get("debug_profile"):
+        raise ValueError("source metrics debug profile differs from the run manifest")
     if run.get("planning_observation_mode") != "cubemap6":
         raise ValueError("source metrics must use cubemap6")
     depth_source = str(run.get("depth_source") or config.get("kind_depth_map") or "")
@@ -349,18 +362,18 @@ def build_replay_manifest(
         raise ValueError("source metrics must use the world cubemap rig")
     if run.get("pioneer_cubemap_extrinsics_version") != "pytorch3d-world-axes-v1":
         raise ValueError("source metrics use an unexpected cubemap extrinsics version")
-    if int(trajectory.get("observation_count", -1)) != 20:
-        raise ValueError("source trajectory must contain 20 observations")
+    if int(trajectory.get("observation_count", -1)) != expected_observations:
+        raise ValueError("source trajectory count differs from the run manifest")
     positions = trajectory.get("positions")
     bundles = pioneer.get("bundles")
-    if not isinstance(positions, list) or len(positions) != 20:
-        raise ValueError("source trajectory positions must contain 20 rows")
-    if not isinstance(bundles, list) or len(bundles) != 20:
-        raise ValueError("source bundle telemetry must contain 20 rows")
-    if int(pioneer.get("bundle_count", -1)) != 20:
-        raise ValueError("source bundle_count must equal 20")
-    if int(pioneer.get("real_face_render_count", -1)) != 120:
-        raise ValueError("source real_face_render_count must equal 120")
+    if not isinstance(positions, list) or len(positions) != expected_observations:
+        raise ValueError("source trajectory positions differ from the declared count")
+    if not isinstance(bundles, list) or len(bundles) != expected_observations:
+        raise ValueError("source bundle telemetry differs from the declared count")
+    if int(pioneer.get("bundle_count", -1)) != expected_observations:
+        raise ValueError("source bundle_count differs from the declared count")
+    if int(pioneer.get("real_face_render_count", -1)) != expected_real_faces:
+        raise ValueError("source real_face_render_count differs from the declared count")
     expected_capture_dir = (capture_root / "frames").resolve()
     if Path(str(metrics.get("capture_dir", ""))).expanduser().resolve() != expected_capture_dir:
         raise ValueError("capture_root does not match metrics.capture_dir")
@@ -418,7 +431,7 @@ def build_replay_manifest(
                 "source_capture_timestamp_utc": timestamp_utc,
                 "planner_position_scene_units": position,
                 "ue_position_cm": ue_position,
-                "replay_request_id": f"pan29-hkust-gt20obs-{bundle_id:06d}",
+                "replay_request_id": f"{replay_request_prefix}-{bundle_id:06d}",
                 "replay_frame_id": f"observation-{bundle_id:06d}",
                 "source_bundle_transaction_marker_present": marker_path.is_file(),
                 "within_pan13_conservative_fly_volume": _within_aabb(
@@ -437,7 +450,7 @@ def build_replay_manifest(
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "task": "PAN-29",
+        "task": task,
         "artifact_role": "post_run_visualization_only",
         "planner_input_unchanged": True,
         "ue5_render_is_postrun_visualization_only": True,
@@ -474,6 +487,8 @@ def build_replay_manifest(
             },
             "depth_source": "GT",
             "scene": "HKUST",
+            "observation_count": expected_observations,
+            "debug_profile": run_manifest["debug_profile"],
             "scene_units_per_meter": float(metrics.get("scene_units_per_meter", 0.2)),
             "planner_state_mode": "position_only",
             "cubemap_rig_frame": "world",
@@ -492,7 +507,11 @@ def build_replay_manifest(
         },
         "observations": replay_rows,
         "known_limitations": [
-            "The source GT run predates per-bundle transaction markers; selected source files are individually SHA256-bound.",
+            (
+                "All selected source bundles include transaction markers and individually SHA256-bound files."
+                if all(row["source_bundle_transaction_marker_present"] for row in replay_rows)
+                else "Some selected source bundles predate transaction markers; selected source files are individually SHA256-bound."
+            ),
             "PAN13 conservative fly-volume membership is reported but does not clamp post-run visualization poses.",
             "UE5 actual render timestamps must remain separate from source observation timestamps.",
         ],
@@ -528,6 +547,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--original-preview", type=Path, required=True)
     parser.add_argument("--bundle-ids", type=_parse_bundle_ids, default=BUNDLE_IDS)
     parser.add_argument("--source-registry-id", required=True)
+    parser.add_argument("--task", default="PAN-29")
+    parser.add_argument("--replay-request-prefix", default="pan29-hkust-gt20obs")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     payload = build_replay_manifest(
@@ -540,9 +561,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         original_preview_path=args.original_preview,
         bundle_ids=args.bundle_ids,
         source_registry_id=args.source_registry_id,
+        task=args.task,
+        replay_request_prefix=args.replay_request_prefix,
     )
     _atomic_json(args.output.expanduser().resolve(), payload)
-    print(json.dumps({"output": str(args.output), "observation_count": len(BUNDLE_IDS)}, sort_keys=True))
+    print(json.dumps({"output": str(args.output), "replay_count": len(args.bundle_ids)}, sort_keys=True))
     return 0
 
 

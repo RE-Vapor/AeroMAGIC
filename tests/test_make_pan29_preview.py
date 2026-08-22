@@ -29,12 +29,18 @@ def tree_hash(paths, root):
 
 
 class MakePAN29PreviewTests(unittest.TestCase):
-    def _fixture(self, root: Path):
+    def _fixture(
+        self,
+        root: Path,
+        observation_count: int = 20,
+        ids: tuple[int, ...] = IDS,
+        task: str = "PAN-29",
+    ):
         capture = root / "capture"
         images_root = capture / "imgs"
         bundles = []
         all_images = []
-        for bundle_id in range(20):
+        for bundle_id in range(observation_count):
             directory = images_root / f"{bundle_id:06d}"
             directory.mkdir(parents=True)
             for face_index, face in enumerate(FACES):
@@ -59,15 +65,19 @@ class MakePAN29PreviewTests(unittest.TestCase):
             "scene": "HKUST",
             "capture_dir": str(capture / "frames"),
             "coverage": [
-                {"normalized": 0.1 + 0.02 * bundle_id} for bundle_id in range(20)
+                {"normalized": 0.1 + 0.01 * bundle_id}
+                for bundle_id in range(observation_count)
             ],
             "trajectory": {
-                "observation_count": 20,
-                "positions": [[bundle_id, 50, -bundle_id] for bundle_id in range(20)],
+                "observation_count": observation_count,
+                "positions": [
+                    [bundle_id, 50, -bundle_id]
+                    for bundle_id in range(observation_count)
+                ],
             },
             "pioneer_observation": {
-                "bundle_count": 20,
-                "real_face_render_count": 120,
+                "bundle_count": observation_count,
+                "real_face_render_count": 6 * observation_count,
                 "bundles": bundles,
             },
             "run": {"planning_observation_mode": "cubemap6"},
@@ -79,7 +89,7 @@ class MakePAN29PreviewTests(unittest.TestCase):
         original_sidecar = {
             "sources": {
                 "capture_images_tree_sha256": tree_hash(all_images, images_root),
-                "capture_image_count": 120,
+                "capture_image_count": 6 * observation_count,
             }
         }
         original_preview.with_suffix(".json").write_text(
@@ -87,7 +97,8 @@ class MakePAN29PreviewTests(unittest.TestCase):
         )
         plan = {
             "schema_version": "pan29.ue5-postrun-replay.v1",
-            "selected_bundle_ids": list(IDS),
+            "task": task,
+            "selected_bundle_ids": list(ids),
             "source": {
                 "depth_source": "GT",
                 "metrics": {"path": str(metrics_path), "sha256": sha256(metrics_path)},
@@ -107,14 +118,14 @@ class MakePAN29PreviewTests(unittest.TestCase):
                     "planner_position_scene_units": [bundle_id, 50, -bundle_id],
                     "within_pan13_conservative_fly_volume": bundle_id == 0,
                 }
-                for bundle_id in IDS
+                for bundle_id in ids
             ],
         }
         plan_path = root / "plan.json"
         plan_path.write_text(json.dumps(plan), encoding="utf-8")
         erp_root = root / "erps"
         replays = []
-        for bundle_id in IDS:
+        for bundle_id in ids:
             directory = erp_root / f"{bundle_id:06d}"
             directory.mkdir(parents=True)
             rgb = np.zeros((64, 128, 3), dtype=np.uint8)
@@ -146,9 +157,9 @@ class MakePAN29PreviewTests(unittest.TestCase):
             "schema_version": "pan29.ue5-postrun-replay-result.v1",
             "result": "PASS",
             "planner_input_unchanged": True,
-            "observation_ids": list(IDS),
+            "observation_ids": list(ids),
             "replay_count": 5,
-            "out_of_pan13_fly_policy_ids": [5, 10, 14, 19],
+            "out_of_pan13_fly_policy_ids": [bundle_id for bundle_id in ids if bundle_id != 0],
             "run_manifest": {
                 "path": str(run_manifest),
                 "sha256": sha256(run_manifest),
@@ -193,6 +204,30 @@ class MakePAN29PreviewTests(unittest.TestCase):
             commit = json.loads(output.with_suffix(".commit.json").read_text())
             self.assertEqual(commit["preview_sha256"], sha256(output))
             self.assertEqual(commit["sidecar_sha256"], sha256(output.with_suffix(".json")))
+
+    def test_generates_pan30_preview_from_fifty_observation_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            selected = (0, 12, 24, 36, 49)
+            metrics, _, result, _ = self._fixture(
+                root,
+                observation_count=50,
+                ids=selected,
+                task="PAN-30",
+            )
+            output = root / "preview" / "pan30.png"
+            sidecar = generate_pan29_preview(
+                metrics_path=metrics,
+                replay_result_path=result,
+                output_path=output,
+            )
+
+            self.assertEqual(sidecar["task"], "PAN-30")
+            self.assertEqual(sidecar["summary"]["source_observation_count"], 50)
+            self.assertEqual(
+                sidecar["summary"]["displayed_observation_ids"], list(selected)
+            )
+            self.assertEqual(sidecar["sources"]["all_source_face_count"], 300)
 
     def test_rejects_tampered_unselected_source_face(self):
         with tempfile.TemporaryDirectory() as temporary:

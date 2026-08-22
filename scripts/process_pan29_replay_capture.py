@@ -348,7 +348,7 @@ def process_replay_capture(
         }
         receipt = {
             "schema_version": "pan29.ue5-replay-receipt.v1",
-            "task": "PAN-29",
+            "task": plan.get("task", "PAN-29"),
             "result": "PASS",
             "observation_id": observation_id,
             "request_id": request["request_id"],

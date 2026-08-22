@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create the five-row PAN-29 Planner-cubemap plus UE5-ERP preview."""
+"""Create a five-row Planner-cubemap plus same-pose UE5-ERP preview."""
 
 from __future__ import annotations
 
@@ -95,16 +95,22 @@ def _draw_trajectory_panel(
     draw: ImageDraw.ImageDraw,
     box: tuple[int, int, int, int],
     positions: np.ndarray,
+    selected_ids: Sequence[int],
 ) -> None:
     left, top, right, bottom = box
     draw.rounded_rectangle(box, radius=18, fill=PANEL)
-    draw.text((left + 24, top + 18), "20-observation Planner path (top view)", font=_font(24, bold=True), fill=TEXT)
+    draw.text(
+        (left + 24, top + 18),
+        f"{len(positions)}-observation Planner path (top view)",
+        font=_font(24, bold=True),
+        fill=TEXT,
+    )
     plot = (left + 54, top + 72, right - 28, bottom - 42)
     x_values = _fit_range(positions[:, 0], plot[0], plot[2])
     z_values = _fit_range(positions[:, 2], plot[3], plot[1])
     points = [(float(x), float(z)) for x, z in zip(x_values, z_values)]
     draw.line(points, fill=RED, width=5, joint="curve")
-    selected = set(OBSERVATION_IDS)
+    selected = set(selected_ids)
     for index, point in enumerate(points):
         radius = 9 if index in selected else 4
         color = ORANGE if index in selected else MUTED
@@ -119,17 +125,24 @@ def _draw_coverage_panel(
     draw: ImageDraw.ImageDraw,
     box: tuple[int, int, int, int],
     coverage: np.ndarray,
+    selected_ids: Sequence[int],
+    task: str,
 ) -> None:
     left, top, right, bottom = box
     draw.rounded_rectangle(box, radius=18, fill=PANEL)
-    draw.text((left + 24, top + 18), "Original PAN-11 normalized coverage", font=_font(24, bold=True), fill=TEXT)
+    draw.text(
+        (left + 24, top + 18),
+        f"{task} source normalized coverage",
+        font=_font(24, bold=True),
+        fill=TEXT,
+    )
     plot = (left + 54, top + 72, right - 28, bottom - 42)
     xs = np.linspace(plot[0], plot[2], len(coverage))
     max_value = max(1.0, float(coverage.max()))
     ys = plot[3] - coverage / max_value * (plot[3] - plot[1])
     points = [(float(x), float(y)) for x, y in zip(xs, ys)]
     draw.line(points, fill=ACCENT, width=5, joint="curve")
-    for index in OBSERVATION_IDS:
+    for index in selected_ids:
         x_value, y_value = points[index]
         draw.ellipse((x_value - 8, y_value - 8, x_value + 8, y_value + 8), fill=ORANGE)
     draw.text(
@@ -158,10 +171,13 @@ def generate_pan29_preview(
 
     metrics = _read_json(metrics_path)
     result = _read_json(replay_result_path)
+    selected_ids = tuple(int(value) for value in result.get("observation_ids") or ())
     if (
         result.get("schema_version") != "pan29.ue5-postrun-replay-result.v1"
         or result.get("result") != "PASS"
-        or tuple(result.get("observation_ids") or ()) != OBSERVATION_IDS
+        or len(selected_ids) != 5
+        or tuple(sorted(selected_ids)) != selected_ids
+        or len(set(selected_ids)) != 5
         or int(result.get("replay_count", -1)) != 5
         or result.get("planner_input_unchanged") is not True
     ):
@@ -194,6 +210,9 @@ def generate_pan29_preview(
     if not plan_path.is_file() or _sha256(plan_path) != plan_record.get("sha256"):
         raise ValueError("PAN-29 replay plan changed after validation")
     plan = _read_json(plan_path)
+    if tuple(plan.get("selected_bundle_ids") or ()) != selected_ids:
+        raise ValueError("replay result observation IDs differ from the plan")
+    task = str(plan.get("task") or "PAN-29")
     source = plan.get("source")
     if not isinstance(source, Mapping):
         raise ValueError("PAN-29 replay plan lacks source provenance")
@@ -215,17 +234,24 @@ def generate_pan29_preview(
     if str(source.get("depth_source", "")).upper() != "GT" or run.get("planning_observation_mode") != "cubemap6":
         raise ValueError("preview source must be the GT cubemap6 run")
     bundles = pioneer.get("bundles")
-    if not isinstance(bundles, list) or len(bundles) != 20 or int(pioneer.get("bundle_count", -1)) != 20:
-        raise ValueError("preview source must contain 20 bundles")
+    source_observation_count = int(trajectory.get("observation_count", -1))
+    if source_observation_count <= selected_ids[-1]:
+        raise ValueError("preview source observation count is too small")
+    if (
+        not isinstance(bundles, list)
+        or len(bundles) != source_observation_count
+        or int(pioneer.get("bundle_count", -1)) != source_observation_count
+    ):
+        raise ValueError("preview source bundle count is inconsistent")
     by_id = {int(row["bundle_id"]): row for row in bundles if isinstance(row, Mapping)}
-    if tuple(by_id) != tuple(range(20)):
-        raise ValueError("source bundle IDs must be exactly 0..19")
+    if tuple(by_id) != tuple(range(source_observation_count)):
+        raise ValueError("source bundle IDs must be contiguous from zero")
     positions = np.asarray(trajectory.get("positions"), dtype=np.float64)
-    if positions.shape != (20, 3) or not np.isfinite(positions).all():
-        raise ValueError("source trajectory positions must be finite 20x3")
+    if positions.shape != (source_observation_count, 3) or not np.isfinite(positions).all():
+        raise ValueError("source trajectory positions have an invalid shape")
     coverage_rows = metrics.get("coverage")
-    if not isinstance(coverage_rows, list) or len(coverage_rows) != 20:
-        raise ValueError("source coverage must contain 20 rows")
+    if not isinstance(coverage_rows, list) or len(coverage_rows) != source_observation_count:
+        raise ValueError("source coverage count differs from the trajectory")
     coverage = np.asarray([float(row["normalized"]) for row in coverage_rows])
     if not np.isfinite(coverage).all():
         raise ValueError("source coverage must be finite")
@@ -234,11 +260,11 @@ def generate_pan29_preview(
     images_root = capture_root / "imgs"
     all_image_paths = [
         images_root / f"{bundle_id:06d}" / f"{face}.png"
-        for bundle_id in range(20)
+        for bundle_id in range(source_observation_count)
         for face in FACE_NAMES
     ]
     decoded_source: dict[tuple[int, str], Image.Image] = {}
-    for bundle_id in range(20):
+    for bundle_id in range(source_observation_count):
         row = by_id[bundle_id]
         if int(row.get("face_count", -1)) != 6 or tuple(row.get("face_names") or ()) != FACE_NAMES:
             raise ValueError(f"source bundle {bundle_id} is not canonical cubemap6")
@@ -250,7 +276,7 @@ def generate_pan29_preview(
                 rgb = image.convert("RGB")
                 if rgb.width != rgb.height:
                     raise ValueError(f"source face image is not square: {path}")
-                if bundle_id in OBSERVATION_IDS:
+                if bundle_id in selected_ids:
                     decoded_source[(bundle_id, face)] = rgb.copy()
     source_tree = _tree_sha256(all_image_paths, images_root)
     original_preview = source.get("original_preview")
@@ -271,13 +297,14 @@ def generate_pan29_preview(
     original_sources = original_sidecar.get("sources")
     if (
         not isinstance(original_sources, Mapping)
-        or int(original_sources.get("capture_image_count", -1)) != 120
+        or int(original_sources.get("capture_image_count", -1))
+        != 6 * source_observation_count
         or original_sources.get("capture_images_tree_sha256") != source_tree
     ):
         raise ValueError("source face tree differs from the accepted original preview")
 
     replays = result.get("replays")
-    if not isinstance(replays, list) or [row.get("observation_id") for row in replays if isinstance(row, Mapping)] != list(OBSERVATION_IDS):
+    if not isinstance(replays, list) or [row.get("observation_id") for row in replays if isinstance(row, Mapping)] != list(selected_ids):
         raise ValueError("replay result rows are missing or reordered")
     erp_images: dict[int, Image.Image] = {}
     erp_paths = []
@@ -302,11 +329,11 @@ def generate_pan29_preview(
         for row in plan.get("observations", ())
         if isinstance(row, Mapping)
     }
-    if tuple(plan_rows) != OBSERVATION_IDS:
+    if tuple(plan_rows) != selected_ids:
         raise ValueError("replay plan rows are not the exact selected IDs")
     out_of_policy_ids = [
         observation_id
-        for observation_id in OBSERVATION_IDS
+        for observation_id in selected_ids
         if not bool(plan_rows[observation_id]["within_pan13_conservative_fly_volume"])
     ]
     if result.get("out_of_pan13_fly_policy_ids") != out_of_policy_ids:
@@ -324,13 +351,18 @@ def generate_pan29_preview(
     row_height = 270
     bottom_height = 390
     footer_height = 76
-    height = header_height + len(OBSERVATION_IDS) * row_height + bottom_height + footer_height
+    height = header_height + len(selected_ids) * row_height + bottom_height + footer_height
     canvas = Image.new("RGB", (width, height), BACKGROUND)
     draw = ImageDraw.Draw(canvas)
-    draw.text((36, 24), "PAN-29 · HKUST GT 20obs · Same-pose UE5 post-run replay", font=_font(38, bold=True), fill=TEXT)
+    draw.text(
+        (36, 24),
+        f"{task} · HKUST GT {source_observation_count}obs · Same-pose UE5 post-run replay",
+        font=_font(38, bold=True),
+        fill=TEXT,
+    )
     draw.text(
         (38, 78),
-        "Planner input — actual GT cubemap used by PAN-11     |     UE5 replay — post-run visualization, not Planner input",
+        "Planner input — actual GT cubemap used online     |     UE5 replay — post-run visualization, not Planner input",
         font=_font(22),
         fill=ACCENT,
     )
@@ -339,13 +371,18 @@ def generate_pan29_preview(
     face_size = 236
     face_gap = 7
     erp_width = 472
-    for row_index, observation_id in enumerate(OBSERVATION_IDS):
+    for row_index, observation_id in enumerate(selected_ids):
         top = header_height + row_index * row_height
         draw.rectangle((20, top + 6, width - 20, top + row_height - 8), fill=PANEL)
         row = plan_rows[observation_id]
         policy_color = GREEN if row["within_pan13_conservative_fly_volume"] else ORANGE
         draw.text((36, top + 30), f"ID {observation_id}", font=_font(30, bold=True), fill=TEXT)
-        draw.text((36, top + 72), f"step {observation_id + 1}/20", font=_font(20), fill=MUTED)
+        draw.text(
+            (36, top + 72),
+            f"step {observation_id + 1}/{source_observation_count}",
+            font=_font(20),
+            fill=MUTED,
+        )
         pose = row["planner_position_scene_units"]
         draw.text((36, top + 110), f"P [{pose[0]:.2f}, {pose[1]:.2f}, {pose[2]:.2f}]", font=_font(17), fill=MUTED)
         source_timestamp = str(row["source_capture_timestamp_utc"])
@@ -387,12 +424,24 @@ def generate_pan29_preview(
         draw.rectangle((x_cursor + 6, top + 12, x_cursor + 6 + erp_width, top + 47), fill=(0, 0, 0))
         draw.text((x_cursor + 16, top + 18), "UE5 ERP · post-run only", font=_font(18, bold=True), fill=ORANGE)
 
-    bottom_top = header_height + len(OBSERVATION_IDS) * row_height + 16
-    _draw_trajectory_panel(canvas, draw, (28, bottom_top, width // 2 - 10, bottom_top + 330), positions)
-    _draw_coverage_panel(draw, (width // 2 + 10, bottom_top, width - 28, bottom_top + 330), coverage)
+    bottom_top = header_height + len(selected_ids) * row_height + 16
+    _draw_trajectory_panel(
+        canvas,
+        draw,
+        (28, bottom_top, width // 2 - 10, bottom_top + 330),
+        positions,
+        selected_ids,
+    )
+    _draw_coverage_panel(
+        draw,
+        (width // 2 + 10, bottom_top, width - 28, bottom_top + 330),
+        coverage,
+        selected_ids,
+        task,
+    )
     draw.text(
         (width // 2, height - 48),
-        "UE5 and PAN-11 use different visual assets/lighting; this preview does not claim RGB, depth, or coverage parity.",
+        "UE5 and Planner use different visual assets/lighting; this preview does not claim RGB, depth, or coverage parity.",
         anchor="mm",
         font=_font(19),
         fill=MUTED,
@@ -405,7 +454,7 @@ def generate_pan29_preview(
         canvas.save(temporary_png, format="PNG", optimize=False, compress_level=9)
         sidecar = {
             "schema_version": "pan29.preview.v1",
-            "task": "PAN-29",
+            "task": task,
             "preview": {
                 "path": str(output_path),
                 "sha256": _sha256(temporary_png),
@@ -427,7 +476,7 @@ def generate_pan29_preview(
                 "displayed_source_face_tree_sha256": _tree_sha256(
                     [
                         images_root / f"{observation_id:06d}" / f"{face}.png"
-                        for observation_id in OBSERVATION_IDS
+                        for observation_id in selected_ids
                         for face in FACE_NAMES
                     ],
                     images_root,
@@ -438,8 +487,8 @@ def generate_pan29_preview(
             "summary": {
                 "scene": "HKUST",
                 "source_depth": "GT",
-                "source_observation_count": 20,
-                "displayed_observation_ids": list(OBSERVATION_IDS),
+                "source_observation_count": source_observation_count,
+                "displayed_observation_ids": list(selected_ids),
                 "planner_face_image_count": 30,
                 "ue5_erp_count": 5,
                 "planner_input_unchanged": True,
