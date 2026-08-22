@@ -241,7 +241,7 @@ def _lighting_snapshot(directional, skylight):
             ),
             "lower_hemisphere_is_solid_color": bool(
                 skylight_component.get_editor_property(
-                    "lower_hemisphere_is_solid_color"
+                    "lower_hemisphere_is_black"
                 )
             ),
             "lower_hemisphere_color_linear": _linear_color_values(
@@ -467,7 +467,7 @@ def apply_lighting_ablation(world, actors, config):
                     "PAN-34 lower hemisphere solid-color flag must be boolean"
                 )
             skylight_component.set_editor_property(
-                "lower_hemisphere_is_solid_color", solid
+                "lower_hemisphere_is_black", solid
             )
         if "lower_hemisphere_color_linear" in skylight_override:
             color = _validated_linear_rgb(
