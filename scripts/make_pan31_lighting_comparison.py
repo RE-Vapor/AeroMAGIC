@@ -187,7 +187,7 @@ def _validate_control(evidence: Mapping[str, ReplayEvidence]) -> None:
     baseline_metrics = baseline.plan["source"]["metrics"]["sha256"]
     expected_variants = {
         "exposure": "exposure_only_ev_plus_1",
-        "relight": "balanced_relight_ev_plus_1",
+        "relight": "balanced_relight_ev_plus_1_v2",
     }
     for name, current in evidence.items():
         if _canonical_plan_rows(current.plan) != baseline_rows:

@@ -282,12 +282,24 @@ def apply_capture_exposure(component, lighting_report):
             "post_process_blend_weight": 0.0,
         }
     settings = component.get_editor_property("post_process_settings")
+    settings.set_editor_property("override_auto_exposure_method", True)
+    settings.set_editor_property(
+        "auto_exposure_method", unreal.AutoExposureMethod.AEM_MANUAL
+    )
+    settings.set_editor_property(
+        "override_auto_exposure_apply_physical_camera_exposure", True
+    )
+    settings.set_editor_property(
+        "auto_exposure_apply_physical_camera_exposure", False
+    )
     settings.set_editor_property("override_auto_exposure_bias", True)
     settings.set_editor_property("auto_exposure_bias", compensation)
     component.set_editor_property("post_process_settings", settings)
     component.set_editor_property("post_process_blend_weight", 1.0)
     return {
         "manual_auto_exposure_disabled_by_project": True,
+        "auto_exposure_method_override": "AEM_MANUAL",
+        "physical_camera_exposure_enabled": False,
         "auto_exposure_bias_override": True,
         "exposure_compensation_ev": compensation,
         "post_process_blend_weight": 1.0,
